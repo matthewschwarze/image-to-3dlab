@@ -340,6 +340,52 @@ def liner_split(vertices: np.ndarray, real: np.ndarray, shrink: float) -> tuple[
     return moved, real & (vertices[:, 2] > centre[2])
 
 
+def clip_below(mesh, gone: np.ndarray, cut: float):
+    """MESH without its GONE vertices, but the triangles that cross from kept to gone are cut along the
+    plane y = CUT instead of thrown away whole, so the edge left is a straight line, not a saw-tooth.
+    New points (positions and UVs) sit on the crossing edges, shared between the triangles that meet
+    there. Only those triangles change."""
+    import trimesh
+
+    v, f = mesh.vertices, mesh.faces
+    uv = getattr(mesh.visual, "uv", None)
+    has_uv = uv is not None and len(uv) == len(v)
+    g = gone[f]
+    whole = f[~g.any(axis=1)]
+    cross = f[g.any(axis=1) & ~g.all(axis=1)]
+    new_pos, new_uv, made = [], [], {}
+
+    def on_edge(a, b):
+        key = (min(a, b), max(a, b))
+        if key not in made:
+            t = (cut - v[a, 1]) / (v[b, 1] - v[a, 1]) if v[b, 1] != v[a, 1] else 0.5
+            t = float(np.clip(t, 0.0, 1.0))
+            made[key] = len(v) + len(new_pos)
+            new_pos.append(v[a] + t * (v[b] - v[a]))
+            if has_uv:
+                new_uv.append(uv[a] + t * (uv[b] - uv[a]))
+        return made[key]
+
+    tris = []
+    for tri in cross:
+        poly = []
+        for i in range(3):
+            a, b = int(tri[i]), int(tri[(i + 1) % 3])
+            if not gone[a]:
+                poly.append(a)
+            if gone[a] != gone[b]:
+                poly.append(on_edge(a, b))
+        tris += [(poly[0], poly[k], poly[k + 1]) for k in range(1, len(poly) - 1)]
+    faces = np.vstack([whole, np.array(tris, dtype=np.int64).reshape(-1, 3)])
+    verts = np.vstack([v, np.array(new_pos).reshape(-1, 3)])
+    visual = mesh.visual.copy()
+    if has_uv:
+        visual.uv = np.vstack([uv, np.array(new_uv).reshape(-1, 2)])
+    out = trimesh.Trimesh(verts, faces, visual=visual, process=False)
+    out.remove_unreferenced_vertices()
+    return out
+
+
 NECK_BACK_SPAN = 0.35     # neck back match: look this share of the head's height above the cut
 NECK_BACK_BAND = 0.3      # points within this share of the neck radius of the neck's centre line (side view)
 
@@ -374,25 +420,29 @@ def drop_scraps(mesh, cut: float, axis=None, ring: float | None = None):
     """MESH without the loose pieces that reach below CUT and are under SCRAP_SHARE of its largest piece:
     bits of the crop's collar, cut free by the outline. The face and the skull can be separate pieces of
     similar size, so only small ones go. With AXIS (x, z) and RING (radius), a small piece goes only if
-    it sticks out beyond RING below the cut: the neck's own outer skin is a separate piece too, and sits
-    inside the collar."""
-    pieces = mesh.split(only_watertight=False)
-    if len(pieces) < 2:
-        return mesh
-    biggest = max(len(p.faces) for p in pieces)
-
-    def scrap(p):
-        low = p.vertices[p.vertices[:, 1] < cut]
-        if len(p.faces) >= SCRAP_SHARE * biggest or not len(low):
-            return False
-        if axis is None or ring is None:
-            return True
-        reach = np.hypot(low[:, 0] - axis[0], low[:, 2] - axis[1])
-        return float(np.percentile(reach, 90)) > ring
-
-    kept = [p for p in pieces if not scrap(p)]
+    it sticks out beyond RING below the cut. Pieces are what is joined in space: a glTF mesh is split at
+    every texture seam, and those patches are not loose."""
     import trimesh
-    return trimesh.util.concatenate(kept)
+
+    welded = mesh.copy()
+    welded.merge_vertices(merge_tex=True, merge_norm=True)
+    label = trimesh.graph.connected_component_labels(welded.face_adjacency, node_count=len(welded.faces))
+    sizes = np.bincount(label)
+    if len(sizes) < 2:
+        return mesh
+    keep = np.ones(len(mesh.faces), bool)
+    for piece in np.flatnonzero(sizes < SCRAP_SHARE * sizes.max()):
+        faces = np.flatnonzero(label == piece)
+        pts = mesh.vertices[np.unique(mesh.faces[faces])]
+        low = pts[pts[:, 1] < cut]
+        if not len(low):
+            continue
+        if axis is not None and ring is not None:
+            reach = np.hypot(low[:, 0] - axis[0], low[:, 2] - axis[1])
+            if float(np.percentile(reach, 90)) <= ring:
+                continue
+        keep[faces] = False
+    return mesh.submesh([np.flatnonzero(keep)], append=True)
 
 
 def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=None, liner=LINER_SHRINK,
@@ -473,7 +523,10 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
     keep &= in_head
     body_mesh = full.copy()
     body_mesh.vertices, gone = liner_split(full.vertices, swap, liner)
-    body = body_mesh.submesh([np.flatnonzero(~gone[full.faces].any(axis=1))], append=True)
+    if tight:   # a straight edge where the old neck ends, not a saw-tooth of whole triangles
+        body = clip_below(body_mesh, gone, cut)
+    else:
+        body = body_mesh.submesh([np.flatnonzero(~gone[full.faces].any(axis=1))], append=True)
     part = head.submesh([np.flatnonzero(keep[head.faces].all(axis=1))], append=True)
     pushed = 0.0
     if tight:
