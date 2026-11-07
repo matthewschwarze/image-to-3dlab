@@ -339,3 +339,35 @@ def test_neck_back_gap_measures_how_far_the_new_neck_stands_in_front_of_the_old_
     new = np.array([[0.0, y, -0.025 if y < 0.35 else -0.03] for y in ys])         # new neck 1.5 cm forward
     assert neck_back_gap(new, old, 0.30, np.array([0.0, 0.0]), 0.04, 0.1) == pytest.approx(0.015, abs=1e-3)
     assert neck_back_gap(old, new, 0.30, np.array([0.0, 0.0]), 0.04, 0.1) == 0.0   # never slides forward
+
+
+def test_clip_below_cuts_crossing_triangles_on_the_plane_and_keeps_the_rest():
+    import trimesh
+    from image_to_3dlab.hero import clip_below
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 2, 0], [1, 2, 0]], float)
+    f = np.array([[0, 1, 2], [1, 3, 2]])
+    uv = v[:, :2] / 2
+    m = trimesh.Trimesh(v, f, visual=trimesh.visual.TextureVisuals(uv=uv), process=False)
+    out = clip_below(m, v[:, 1] >= 1.0, 1.0)
+    assert out.vertices[:, 1].max() == 1.0                       # nothing above the plane, edge on it
+    assert np.isclose(out.area, 1.0)                             # exactly the lower half of the 1 x 2 square
+    assert np.allclose(out.visual.uv, out.vertices[:, :2] / 2)   # UVs follow the new points
+    assert len(out.split(only_watertight=False)) == 1            # still one piece: new points are shared
+
+
+def test_drop_scraps_treats_texture_seams_as_joined():
+    import trimesh
+    from image_to_3dlab.hero import drop_scraps
+    head = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+    head.apply_translation([0, 0.4, 0])
+    neck = trimesh.creation.cylinder(radius=0.03, height=0.2, sections=100)   # 400 faces: kept whole, not halves
+    neck.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    neck.apply_translation([0, 0.3, 0.0])
+    # the neck's lower half as its own patch (own copies of the seam points), as a glTF export has it
+    lower = neck.faces[neck.triangles_center[:, 1] < 0.3]
+    upper = neck.faces[neck.triangles_center[:, 1] >= 0.3]
+    split = trimesh.util.concatenate([trimesh.Trimesh(neck.vertices, upper, process=False),
+                                      trimesh.Trimesh(neck.vertices, lower, process=False)])
+    whole = trimesh.util.concatenate([head, split])
+    assert len(drop_scraps(whole, 0.25).faces) == len(whole.faces)
+
