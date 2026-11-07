@@ -314,3 +314,28 @@ def test_tuck_liner_drops_faces_with_no_new_head_behind_them():
 
     assert drop.tolist() == [True, True]
     assert np.allclose(moved, verts)                              # nothing to pull them to
+
+
+def test_drop_scraps_keeps_small_pieces_inside_the_neck_and_drops_flaps_outside():
+    import trimesh
+    from image_to_3dlab.hero import drop_scraps
+    head = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+    head.apply_translation([0, 0.4, 0])
+    skin = trimesh.creation.cylinder(radius=0.03, height=0.06)
+    skin.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+    skin.apply_translation([0, 0.3, 0])
+    flap = trimesh.creation.box(extents=[0.02, 0.02, 0.02])
+    flap.apply_translation([0, 0.29, 0.08])
+    out = drop_scraps(trimesh.util.concatenate([head, skin, flap]), 0.31, np.array([0.0, 0.0]), 0.045)
+    assert len(out.faces) == len(head.faces) + len(skin.faces)
+    out = drop_scraps(trimesh.util.concatenate([head, skin, flap]), 0.31)
+    assert len(out.faces) == len(head.faces)
+
+
+def test_neck_back_gap_measures_how_far_the_new_neck_stands_in_front_of_the_old_one():
+    from image_to_3dlab.hero import neck_back_gap
+    ys = np.linspace(0.30, 0.40, 161)
+    old = np.array([[0.0, y, -0.04 if y < 0.35 else -0.03] for y in ys])          # old neck back, then skull
+    new = np.array([[0.0, y, -0.025 if y < 0.35 else -0.03] for y in ys])         # new neck 1.5 cm forward
+    assert neck_back_gap(new, old, 0.30, np.array([0.0, 0.0]), 0.04, 0.1) == pytest.approx(0.015, abs=1e-3)
+    assert neck_back_gap(old, new, 0.30, np.array([0.0, 0.0]), 0.04, 0.1) == 0.0   # never slides forward

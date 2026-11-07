@@ -292,6 +292,12 @@ def main() -> int:
     parser.add_argument("--cut-at", default=None,
                         help="swap only the head above this height (model units), or 'neck' to find it; "
                              "default swaps the whole head region")
+    parser.add_argument("--liner", type=float, default=None,
+                        help="keep the back of the old head under the new one, shrunk this much; 0 drops it "
+                             "(no second pair of ears, but any gap the new head leaves shows)")
+    parser.add_argument("--skull-fit", action="store_true",
+                        help="after the line-up, fit the skulls with scale: a head built a few percent too big "
+                             "otherwise sits low and forward at the chin")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--body", type=Path, default=None,
                         help="an existing Pixal3D model of the picture, used as the body instead of building one")
@@ -436,7 +442,8 @@ def main() -> int:
         crop_pic = hero.load_picture(head_cutout)
         part_body, part_head, report = hero.graft(
             body_mesh, head_mesh, full_box, hero.picture_box(crop_pic), head_crop, crop_pic.width,
-            bone, (cut.height, cut.width),
+            bone, (cut.height, cut.width), liner=hero.LINER_SHRINK if args.liner is None else args.liner,
+            skull_fit=args.skull_fit,
             cut_at=args.cut_at if args.cut_at in (None, "neck") else float(args.cut_at))
         run.say(f"graft {report}")
         # One piece: the head's paint and material always follow the body's own head.
