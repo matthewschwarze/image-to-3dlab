@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Hero route: `--liner 0` drops the old head's back instead of keeping it as a liner (no second pair of ears),
+  and `--skull-fit` lines the skulls up with scale after the normal line-up (a head built a few percent too
+  big sat low and forward at the chin).
+
+### Fixed
+- Hero route, `--cut-at neck` on a tight collar: the neck finder found nothing and the whole head was swapped.
+  It now cuts just under the jaw from the body's side profile, drops the new head's loose collar scraps (but
+  not its own neck skin), and slides the new head straight back until its neck meets the old neck's back.
+
 ## [0.5.7] - 2026-11-03
 
 ### Changed

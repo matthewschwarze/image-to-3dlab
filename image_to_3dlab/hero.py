@@ -29,6 +29,7 @@ HEAD_FLOOR_PERCENTILE = 5
 OUTLINE_GROW_PX = 4       # the least margin round the real head's outline
 OUTLINE_GROW_SHARE = 0.1  # else a tenth of the head's width
 LINER_SHRINK = 0.04       # the body's own head, kept as a liner under the new hair, shrinks this much
+SKULL_SHARE = 0.55        # skull fit: the top this share of each head's height
 COLLAR_RATIO = 1.15       # a slice this much wider than the neck above it is a collar, not more neck
 MIN_SLICE_POINTS = 20     # fewer points than this in a slice and its width is noise
 
@@ -148,6 +149,62 @@ def neck_height(heights: np.ndarray, xs: np.ndarray, slices: int = 30) -> float 
     return float(edges[narrower[0]]) if len(narrower) else None
 
 
+NECK_SLACK = 1.12          # the collar's top: the first slice from below within this much of the neck's narrowest
+NECK_MARGIN = 0.03        # then this share of the head's height higher, clear of the collar's rim
+
+
+def collar_top(vertices: np.ndarray, real: np.ndarray) -> float:
+    """The height of the collar's top on the body, from its width profile (up = y).
+
+    From a little below the head region up to just under the mouth, slice the body near the neck's
+    centre line (arms left out); the neck's narrowest slice sets the scale and the first slice from
+    below that is within NECK_SLACK of it is where the collar ends. `neck_height` looks inside the
+    head region only and on a slim neck finds the narrow band under the jaw instead, which put the
+    cut through the chin. A bare neck has no collar: its lowest neck slice is returned."""
+    heights, xs = vertices[:, 1], vertices[:, 0]
+    lo, hh = float(heights[real].min()), float(np.ptp(heights[real]))
+    axis = float(np.median(xs[real]))
+    near = np.abs(xs - axis) < 0.6 * float(np.ptp(xs[real]))
+    step = 0.01 * hh
+    zs = np.arange(lo - 0.15 * hh, lo + 0.45 * hh, step)
+    widths = np.full(len(zs), np.nan)
+    for i, z in enumerate(zs):
+        sl = near & (np.abs(heights - z) < step)
+        if sl.sum() >= MIN_SLICE_POINTS:
+            widths[i] = np.percentile(xs[sl], 98) - np.percentile(xs[sl], 2)
+    if np.isnan(widths).all():
+        return lo
+    neck = np.nanmin(widths)
+    found = np.flatnonzero(widths <= NECK_SLACK * neck)
+    return float(zs[found[0]] + NECK_MARGIN * hh)
+
+
+CHIN_JUMP = 0.15          # the chin starts where the front of a slice juts this share of the head's height
+CHIN_CLEAR = 0.02         # past the neck below it; the collar cut goes this share of the head height lower
+
+
+def chin_bottom(vertices: np.ndarray, real: np.ndarray) -> float | None:
+    """The height where the body's jaw starts (up = y, front = +z): going up the neck, the first
+    slice whose front juts CHIN_JUMP of the head's height past the furthest-back front below it.
+    On a short neck the jaw hangs below the collar's top, and a cut at the collar left the old
+    chin under the new head. None if no slice juts out."""
+    heights = vertices[:, 1]
+    lo, hh = float(heights[real].min()), float(np.ptp(heights[real]))
+    axis = np.median(vertices[real][:, [0, 2]], axis=0)
+    near = np.hypot(vertices[:, 0] - axis[0], vertices[:, 2] - axis[1]) < 0.45 * hh
+    step = 0.01 * hh
+    back_most = None
+    for z in np.arange(lo - 0.15 * hh, lo + 0.45 * hh, step):
+        sl = near & (np.abs(heights - z) < step)
+        if sl.sum() < MIN_SLICE_POINTS:
+            continue
+        front = float(np.percentile(vertices[sl, 2], 98))
+        if back_most is not None and front - back_most > CHIN_JUMP * hh:
+            return float(z)
+        back_most = front if back_most is None else min(back_most, front)
+    return None
+
+
 def neck_ring(vertices: np.ndarray, real: np.ndarray, cut: float) -> tuple[np.ndarray, float]:
     """(the neck's centre line as x, z; the skull's radius round it), from the upper half of the
     head above CUT. A neck is narrower than the skull and a collar wider, so the skull's radius
@@ -157,6 +214,35 @@ def neck_ring(vertices: np.ndarray, real: np.ndarray, cut: float) -> tuple[np.nd
     axis = np.median(vertices[skull][:, [0, 2]], axis=0)
     radius = np.hypot(vertices[skull, 0] - axis[0], vertices[skull, 2] - axis[1])
     return axis, float(np.percentile(radius, 90))
+
+
+NECK_RING_SLACK = 1.12    # the neck/collar split: this much outside the neck's own radius
+
+
+def neck_core(vertices: np.ndarray, real: np.ndarray) -> tuple[np.ndarray, float]:
+    """(the neck's centre line as x, z; the split radius between neck and collar), from the body's
+    narrowest neck slice: its own centre (the neck sits behind the skull's) and NECK_RING_SLACK times
+    its radius. For a tight collar, narrower than the skull, where `neck_ring` (the skull's radius)
+    calls the whole collar neck."""
+    heights, xs = vertices[:, 1], vertices[:, 0]
+    lo, hh = float(heights[real].min()), float(np.ptp(heights[real]))
+    axis0 = float(np.median(xs[real]))
+    near = np.abs(xs - axis0) < 0.6 * float(np.ptp(xs[real]))
+    step = 0.01 * hh
+    best = None
+    for z in np.arange(lo - 0.15 * hh, lo + 0.45 * hh, step):
+        sl = near & (np.abs(heights - z) < step)
+        if sl.sum() < MIN_SLICE_POINTS:
+            continue
+        w = np.percentile(xs[sl], 98) - np.percentile(xs[sl], 2)
+        if best is None or w < best[0]:
+            best = (w, sl)
+    if best is None:
+        return np.median(vertices[real][:, [0, 2]], axis=0), float(np.ptp(xs[real]))
+    pts = vertices[best[1]][:, [0, 2]]
+    centre = (np.percentile(pts, 2, axis=0) + np.percentile(pts, 98, axis=0)) / 2
+    radius = np.percentile(np.hypot(pts[:, 0] - centre[0], pts[:, 1] - centre[1]), 90)
+    return centre, float(NECK_RING_SLACK * radius)
 
 
 def head_cut(body: np.ndarray, real: np.ndarray, head: np.ndarray, cut: float | None,
@@ -254,8 +340,63 @@ def liner_split(vertices: np.ndarray, real: np.ndarray, shrink: float) -> tuple[
     return moved, real & (vertices[:, 2] > centre[2])
 
 
+NECK_BACK_SPAN = 0.35     # neck back match: look this share of the head's height above the cut
+NECK_BACK_BAND = 0.3      # points within this share of the neck radius of the neck's centre line (side view)
+
+
+def back_line(vertices: np.ndarray, x: float, band: float, heights: np.ndarray, step: float) -> np.ndarray:
+    """The back of VERTICES (lowest z) on the centre line X (+- BAND) at each of HEIGHTS; NaN where empty."""
+    out = np.full(len(heights), np.nan)
+    mid = np.abs(vertices[:, 0] - x) < band
+    for i, y in enumerate(heights):
+        s = mid & (np.abs(vertices[:, 1] - y) < step)
+        if s.sum() >= 3:
+            out[i] = np.percentile(vertices[s, 2], 2)
+    return out
+
+
+def neck_back_gap(head: np.ndarray, body: np.ndarray, cut: float, axis, ring: float, span: float) -> float:
+    """How far the back of HEAD's neck stands in front of BODY's (the old neck, just above CUT, where no collar
+    is), on the neck's centre line: the median over the lowest tenth of SPAN. The new head's neck often stands
+    more upright, so the old neck shows behind it; sliding the whole head back by this puts it on top."""
+    step = 0.01 * span / NECK_BACK_SPAN
+    heights = np.arange(cut, cut + 0.1 * span, step)
+    band = NECK_BACK_BAND * ring
+    gap = back_line(head, axis[0], band, heights, step) - back_line(body, axis[0], band, heights, step)
+    gap = gap[~np.isnan(gap)]
+    return max(float(np.median(gap)), 0.0) if len(gap) else 0.0
+
+
+SCRAP_SHARE = 0.3          # a new-head piece this much smaller than the largest, reaching below the cut, is a scrap
+
+
+def drop_scraps(mesh, cut: float, axis=None, ring: float | None = None):
+    """MESH without the loose pieces that reach below CUT and are under SCRAP_SHARE of its largest piece:
+    bits of the crop's collar, cut free by the outline. The face and the skull can be separate pieces of
+    similar size, so only small ones go. With AXIS (x, z) and RING (radius), a small piece goes only if
+    it sticks out beyond RING below the cut: the neck's own outer skin is a separate piece too, and sits
+    inside the collar."""
+    pieces = mesh.split(only_watertight=False)
+    if len(pieces) < 2:
+        return mesh
+    biggest = max(len(p.faces) for p in pieces)
+
+    def scrap(p):
+        low = p.vertices[p.vertices[:, 1] < cut]
+        if len(p.faces) >= SCRAP_SHARE * biggest or not len(low):
+            return False
+        if axis is None or ring is None:
+            return True
+        reach = np.hypot(low[:, 0] - axis[0], low[:, 2] - axis[1])
+        return float(np.percentile(reach, 90)) > ring
+
+    kept = [p for p in pieces if not scrap(p)]
+    import trimesh
+    return trimesh.util.concatenate(kept)
+
+
 def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=None, liner=LINER_SHRINK,
-          cut_at=None):
+          cut_at=None, skull_fit=False):
     """Swap FULL's head region for HEAD (both trimesh meshes; HEAD is moved in place).
 
     CUT_AT: "neck" finds the neck (`neck_height`) and swaps only above it; a height (model
@@ -289,6 +430,19 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
     dst = dst[rng.choice(len(dst), min(80000, len(dst)), replace=False)]
     fine, _, cost = trimesh.registration.icp(src, dst, max_iterations=60, scale=False)
     head.apply_transform(fine)
+    if skull_fit:
+        # The crop sizes the new head only roughly, and the height match above includes the neck, so a
+        # head a few percent too big sits low and forward at the chin. Line up the skulls (upper part of
+        # both heads, where they agree) with scale; the neck and chin then follow.
+        top_r, top_n = full.vertices[real, 1].max(), head.vertices[new, 1].max()
+        hr, hn = np.ptp(full.vertices[real, 1]), np.ptp(head.vertices[new, 1])
+        s_src = head.vertices[new & (head.vertices[:, 1] > top_n - SKULL_SHARE * hn)]
+        s_dst = full.vertices[real & (full.vertices[:, 1] > top_r - SKULL_SHARE * hr)]
+        s_src = s_src[rng.choice(len(s_src), min(30000, len(s_src)), replace=False)]
+        s_dst = s_dst[rng.choice(len(s_dst), min(80000, len(s_dst)), replace=False)]
+        skull, _, cost = trimesh.registration.icp(s_src, s_dst, max_iterations=80, scale=True)
+        head.apply_transform(skull)
+        place = place @ np.diag([np.cbrt(abs(np.linalg.det(skull[:3, :3])))] * 3 + [1.0])
 
     if grow is None:
         # A margin in proportion to the head: the new head's hair often stands wider than the
@@ -296,17 +450,44 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
         cols = np.flatnonzero(outline.any(axis=0))
         grow = max(OUTLINE_GROW_PX, int(round(OUTLINE_GROW_SHARE * (cols.max() - cols.min()))))
     keep = on_mask(*project(head.vertices, full_frame), ndimage.binary_dilation(outline, iterations=grow))
-    cut = neck_height(full.vertices[real, 1], full.vertices[real, 0]) if cut_at == "neck" else cut_at
-    axis, ring = neck_ring(full.vertices, real, cut) if cut is not None else (None, None)
+    tight = False
+    if cut_at == "neck":
+        cut = neck_height(full.vertices[real, 1], full.vertices[real, 0])
+        if cut is None:   # no collar inside the head region: look at the body's own profile below it
+            tight = True
+            cut = collar_top(full.vertices, real)
+            chin = chin_bottom(full.vertices, real)
+            if chin is not None:
+                cut = min(cut, chin - CHIN_CLEAR * float(np.ptp(full.vertices[real, 1])))
+    else:
+        cut = cut_at
+    if cut is None:
+        axis, ring = None, None
+    else:
+        axis, ring = neck_core(full.vertices, real) if tight else neck_ring(full.vertices, real, cut)
     swap, in_head = head_cut(full.vertices, real, head.vertices, cut, axis, ring)
+    if tight:
+        # The cut sits under the jaw, so the plane alone takes the whole old head; below it the body keeps
+        # its neck and collar as they are (no radius split: a tight collar is barely wider than the neck).
+        swap = real & (full.vertices[:, 1] >= cut)
     keep &= in_head
     body_mesh = full.copy()
     body_mesh.vertices, gone = liner_split(full.vertices, swap, liner)
     body = body_mesh.submesh([np.flatnonzero(~gone[full.faces].any(axis=1))], append=True)
     part = head.submesh([np.flatnonzero(keep[head.faces].all(axis=1))], append=True)
+    pushed = 0.0
+    if tight:
+        part = drop_scraps(part, cut, axis, ring)
+        # After the scraps are picked (they are judged by distance from the neck, which this changes). The
+        # whole body, not only the head bone's share: that starts above the cut, on the skull. One straight
+        # slide back: the head keeps its shape.
+        pushed = neck_back_gap(part.vertices, full.vertices, cut, axis, ring,
+                               NECK_BACK_SPAN * float(np.ptp(full.vertices[real, 1])))
+        part.vertices = part.vertices - [0.0, 0.0, pushed]
     report = {"head_bones": picked, "outline_margin_px": int(grow), "liner_shrink": liner,
               "cut_at": None if cut is None else round(cut, 4),
               "neck_ring": None if ring is None else round(ring, 4),
+              "slid_back": round(pushed, 4),
               "scale_to_real_head": round(float(place[0, 0]), 4),
               "line_up_cost": float(cost), "body_faces": int(len(body.faces)),
               "head_faces": int(len(part.faces))}
