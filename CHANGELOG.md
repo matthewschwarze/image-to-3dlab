@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an open neckline showed holes and the old neck stump. Both are now cut straight and a smooth tube in the head's
   own skin colour sits just inside them. A collar is left standing, and nothing changes when the head already
   sits down inside the body all the way round. Off by default.
+- Hero route: `--head-steps N` sets the sampling steps for the head's own build. It used the engine's fast
+  setting (8), which is tuned for whole models; a face gains from more.
 
 ### Fixed
 - Hero route, `--cut-at neck` on a tight collar: the neck finder found nothing and the whole head was swapped.

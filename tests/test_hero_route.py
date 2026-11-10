@@ -27,6 +27,13 @@ def test_stage_prints_the_marker_the_studio_reads(capsys, tmp_path):
     assert "I2L_STAGE::head::Building the head" in Run.log.getvalue()
 
 
+def test_head_command_passes_steps_only_when_asked(tmp_path):
+    picture, out = tmp_path / "crop.png", tmp_path / "head_raw.glb"
+    plain = hero_route.head_command(picture, out, 7)
+    assert plain[-4:] == [picture, out, "--seed", "7"] and "--steps" not in plain
+    assert hero_route.head_command(picture, out, 7, steps=20)[-2:] == ["--steps", "20"]
+
+
 def test_stages_are_in_running_order():
     assert hero_route.STAGES == ("body", "measure", "crop", "head", "graft", "join", "check")
 
