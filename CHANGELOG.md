@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hero route: `--liner 0` drops the old head's back instead of keeping it as a liner (no second pair of ears),
   and `--skull-fit` lines the skulls up with scale after the normal line-up (a head built a few percent too
   big sat low and forward at the chin).
+- Hero route: `--neck-bridge` closes the seam between the body's neck and the new head's on a bare neck or a
+  tight collar (with `--cut-at neck`). The two necks used to overlap as two ragged edges that were not joined, so
+  an open neckline showed holes and the old neck stump. Both are now cut straight and a smooth tube in the head's
+  own skin colour sits just inside them. A collar is left standing, and nothing changes when the head already
+  sits down inside the body all the way round. Off by default.
 
 ## [0.5.10] - 2026-11-13
 
