@@ -261,6 +261,7 @@ def test_regions_survive_a_rescaled_re_export():
 
 def test_drop_scraps_keeps_small_pieces_inside_the_neck_and_drops_flaps_outside():
     import trimesh
+
     from image_to_3dlab.hero import drop_scraps
     head = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
     head.apply_translation([0, 0.4, 0])
@@ -286,6 +287,7 @@ def test_neck_back_gap_measures_how_far_the_new_neck_stands_in_front_of_the_old_
 
 def test_clip_below_cuts_crossing_triangles_on_the_plane_and_keeps_the_rest():
     import trimesh
+
     from image_to_3dlab.hero import clip_below
     v = np.array([[0, 0, 0], [1, 0, 0], [0, 2, 0], [1, 2, 0]], float)
     f = np.array([[0, 1, 2], [1, 3, 2]])
@@ -300,6 +302,7 @@ def test_clip_below_cuts_crossing_triangles_on_the_plane_and_keeps_the_rest():
 
 def test_drop_scraps_treats_texture_seams_as_joined():
     import trimesh
+
     from image_to_3dlab.hero import drop_scraps
     head = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
     head.apply_translation([0, 0.4, 0])
@@ -314,3 +317,97 @@ def test_drop_scraps_treats_texture_seams_as_joined():
     whole = trimesh.util.concatenate([head, split])
     assert len(drop_scraps(whole, 0.25).faces) == len(whole.faces)
 
+
+def _tube(radius, bottom, top, ragged=None, sections=48, rings=40, seed=0):
+    """An open tube round the y axis with UVs; RAGGED (lo, hi) drops half the triangles between those heights."""
+    import trimesh
+    angle = np.linspace(0, 2 * np.pi, sections, endpoint=False)
+    ys = np.linspace(bottom, top, rings + 1)
+    v = np.array([[radius * np.sin(a), y, radius * np.cos(a)] for y in ys for a in angle])
+    uv = np.array([[a / (2 * np.pi), (y - bottom) / (top - bottom)] for y in ys for a in angle])
+    f = []
+    for r in range(rings):
+        for k in range(sections):
+            a, b = r * sections + k, r * sections + (k + 1) % sections
+            f += [(a, b, a + sections), (b, b + sections, a + sections)]
+    f = np.array(f)
+    if ragged:
+        mid = v[f][:, :, 1].mean(axis=1)
+        torn = (mid > ragged[0]) & (mid < ragged[1]) & (np.random.default_rng(seed).random(len(f)) < 0.5)
+        f = f[~torn]
+    material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (8, 8), (200, 150, 120)))
+    return trimesh.Trimesh(v, f, visual=trimesh.visual.TextureVisuals(uv=uv, material=material), process=False)
+
+
+def _radius(mesh):
+    return np.hypot(mesh.vertices[:, 0], mesh.vertices[:, 2])
+
+
+def test_ring_reach_takes_the_neck_skin_not_a_collar_and_says_where_nothing_is():
+    from image_to_3dlab.hero import ring_reach
+
+    def square(half):
+        c = np.array([[-half, -half], [half, -half], [half, half], [-half, half]], float)
+        return np.stack([c, np.roll(c, -1, axis=0)], axis=1)
+
+    walls = np.concatenate([square(0.9), square(1.0), square(1.5), square(1.6)])   # neck (two walls), collar
+    assert ring_reach(walls, np.array([0.0, np.pi / 2])) == pytest.approx([1.0, 1.0])
+    one_side = ring_reach(square(1.0)[:1], np.array([0.0, np.pi]))                  # the segment at z = -1 only
+    assert np.isnan(one_side[0]) and one_side[1] == pytest.approx(1.0)
+    ends = np.zeros((16, 2, 2))
+    ends[4:8, :, 0] = 0.25                                                           # the skin's UVs
+    reach, uv = ring_reach(walls, np.array([0.0]), ends)
+    assert reach == pytest.approx([1.0]) and uv[0] == pytest.approx([0.25, 0.0])
+
+
+def test_bridge_neck_cuts_both_ragged_necks_straight_and_closes_the_gap():
+    from image_to_3dlab.hero import bridge_neck, bridge_ring, neck_centre
+    body = _tube(0.040, 0.0, 0.32, ragged=(0.30, 0.33))
+    head = _tube(0.035, 0.29, 0.50, ragged=(0.28, 0.31), seed=1)
+    new_body, new_head, report = bridge_neck(body, head, cut=0.30, ring=0.04, head_height=0.2)
+    low, high = report["body_at"], report["head_at"]
+    assert 0.29 < low < 0.30 and 0.31 <= high < 0.32 and "skipped" not in report
+    assert new_body.vertices[:, 1].max() == pytest.approx(low, abs=1e-4)             # the stump is gone, cut straight
+    old = new_head.vertices[:len(new_head.vertices) - 4 * 72]
+    assert old[:, 1].min() == pytest.approx(high, abs=1e-4)                          # so is the head's ragged edge
+    axis = neck_centre(new_head, 0.2)
+    for y in np.linspace(low + 1e-3, high - 1e-3, 5):                                # between them: a whole ring
+        ring = bridge_ring(new_head, float(y), axis, 0.064, missing=0.0)
+        assert ring is not None and 0.03 < ring.min() and ring.max() < 0.04          # inside both necks
+    assert new_head.vertices[:, 1].min() < low                                       # tucked into the body
+    assert len(new_head.visual.uv) == len(new_head.vertices)
+    assert len(new_head.faces) == len(new_head.faces[(new_head.faces < len(new_head.vertices)).all(axis=1)])
+
+
+def test_bridge_neck_leaves_a_collar_standing():
+    import trimesh
+
+    from image_to_3dlab.hero import bridge_neck
+    neck = _tube(0.040, 0.0, 0.32, ragged=(0.30, 0.33))
+    collar = _tube(0.060, 0.20, 0.33)
+    body = trimesh.util.concatenate([neck, collar])
+    head = _tube(0.035, 0.29, 0.50, ragged=(0.28, 0.31), seed=1)
+    new_body, _, report = bridge_neck(body, head, cut=0.30, ring=0.04, head_height=0.2)
+    assert "skipped" not in report
+    above = new_body.vertices[new_body.vertices[:, 1] > report["body_at"] + 1e-4]
+    assert len(above) and np.hypot(above[:, 0], above[:, 2]).min() > 0.055           # only the collar is left up there
+    assert above[:, 1].max() == pytest.approx(0.33)
+
+
+def test_bridge_neck_changes_nothing_when_there_is_no_seam_to_close():
+    from image_to_3dlab.hero import bridge_neck, bridge_notes
+    body = _tube(0.040, 0.0, 0.32, ragged=(0.30, 0.33))
+    deep = _tube(0.035, 0.25, 0.50)                                                  # the head's neck runs into the body
+    same_body, same_head, report = bridge_neck(body, deep, cut=0.30, ring=0.04, head_height=0.2)
+    assert same_body is body and same_head is deep and report["expected"] and bridge_notes(report) == []
+    torn = _tube(0.040, 0.0, 0.32, ragged=(0.0, 0.33))                               # no whole ring on the body
+    head = _tube(0.035, 0.29, 0.50, ragged=(0.28, 0.31), seed=1)
+    same_body, same_head, report = bridge_neck(torn, head, cut=0.30, ring=0.04, head_height=0.2)
+    assert same_body is torn and same_head is head
+    assert bridge_notes(report) == ["the neck seam was not bridged: the body's neck is not a whole ring under the cut"]
+
+
+def test_bridge_notes_flags_a_tall_bridge_only():
+    from image_to_3dlab.hero import bridge_notes
+    assert bridge_notes(None) == [] and bridge_notes({"height_share": 0.05}) == []
+    assert "tall" in bridge_notes({"height_share": 0.2})[0]
