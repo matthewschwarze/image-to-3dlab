@@ -170,6 +170,13 @@ def run_record_path(model: Path) -> Path | None:
     return None
 
 
+def head_command(picture: Path, out: Path, seed: int, steps: int | None = None) -> list:
+    """The command that builds the head on its own from its crop. STEPS None leaves the engine's default
+    (its fast setting); the face is the point of a hero, and more steps bring it closer to the picture
+    for a few minutes more."""
+    return [PYTHON, "-u", GENERATE, picture, out, "--seed", str(seed), *(["--steps", str(steps)] if steps else [])]
+
+
 def missing_parts(parts: dict[str, Path]) -> list[str]:
     """The named parts whose file is not on disk: checked before 20 minutes of work, not after."""
     return [name for name, path in parts.items() if not Path(path).exists()]
@@ -283,6 +290,9 @@ def main() -> int:
     parser.add_argument("--neck-bridge", action="store_true",
                         help="with --cut-at neck on a bare neck or tight collar: cut both necks straight and "
                              "close the seam between them with a strip of triangles (an open neckline shows it)")
+    parser.add_argument("--head-steps", type=int, default=None,
+                        help="sampling steps for the head's own build (1 to 50; default: the engine's fast "
+                             "setting). More steps follow the picture's face more closely and take longer")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--body", type=Path, default=None,
                         help="an existing Pixal3D model of the picture, used as the body instead of building one")
@@ -301,6 +311,10 @@ def main() -> int:
 
     if not pixal3d_generate.dump_supported():
         print(f"[hero] {NO_DUMP_BUILD}", file=sys.stderr)
+        return 2
+    problem = pixal3d_generate.steps_problem(args.head_steps)     # now, not after the body is built
+    if problem:
+        print(f"[hero] --head-steps: {problem}", file=sys.stderr)
         return 2
     problem = body_problem(args.body, args.body_views, args.body_dump)
     if problem:
@@ -392,7 +406,7 @@ def main() -> int:
     stage(run, "head", "Building the head on its own (the long step)")
     head_raw = out / "head_raw.glb"
     if run.step("head: Pixal3D on the crop", head_raw):
-        run.run([PYTHON, "-u", GENERATE, head_picture, head_raw, "--seed", str(args.seed)])
+        run.run(head_command(head_picture, head_raw, args.seed, args.head_steps))
     head = out / "head.glb"
     finish_head(run, head_raw, head_picture, out / "head_clean.glb", head, args.head_faces)
 
@@ -502,7 +516,7 @@ def main() -> int:
         "components": [c for s in sub_runs for c in s.get("components", [])] + LICENCES,
         "unsure": run.unsure,
         "parameters": {"body_faces": args.body_faces, "head_faces": args.head_faces, "seed": args.seed,
-                       "neck_bridge": args.neck_bridge,
+                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge,
                        "crop": list(crop), "head_bones": picked},
         "sub_runs": sub_run_paths,
     }
