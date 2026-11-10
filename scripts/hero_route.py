@@ -280,6 +280,9 @@ def main() -> int:
     parser.add_argument("--skull-fit", action="store_true",
                         help="after the line-up, fit the skulls with scale: a head built a few percent too big "
                              "otherwise sits low and forward at the chin")
+    parser.add_argument("--neck-bridge", action="store_true",
+                        help="with --cut-at neck on a bare neck or tight collar: cut both necks straight and "
+                             "close the seam between them with a strip of triangles (an open neckline shows it)")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--body", type=Path, default=None,
                         help="an existing Pixal3D model of the picture, used as the body instead of building one")
@@ -418,9 +421,11 @@ def main() -> int:
         part_body, part_head, report = hero.graft(
             body_mesh, head_mesh, full_box, hero.picture_box(crop_pic), head_crop, crop_pic.width,
             bone, (cut.height, cut.width), liner=hero.LINER_SHRINK if args.liner is None else args.liner,
-            skull_fit=args.skull_fit,
+            skull_fit=args.skull_fit, neck_bridge=args.neck_bridge,
             cut_at=args.cut_at if args.cut_at in (None, "neck") else float(args.cut_at))
         run.say(f"graft {report}")
+        for note in hero.bridge_notes(report.get("neck_bridge")):
+            run.flag(note)
         # One piece: the head's paint and material always follow the body's own head.
         real = np.flatnonzero(np.isin(bone, picked))
         reach = 0.02 * float(np.ptp(body_mesh.vertices[real, 1]))
@@ -497,6 +502,7 @@ def main() -> int:
         "components": [c for s in sub_runs for c in s.get("components", [])] + LICENCES,
         "unsure": run.unsure,
         "parameters": {"body_faces": args.body_faces, "head_faces": args.head_faces, "seed": args.seed,
+                       "neck_bridge": args.neck_bridge,
                        "crop": list(crop), "head_bones": picked},
         "sub_runs": sub_run_paths,
     }

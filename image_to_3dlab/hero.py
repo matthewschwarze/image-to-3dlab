@@ -498,12 +498,234 @@ def drop_scraps(mesh, cut: float, axis=None, ring: float | None = None):
     return mesh.submesh([np.flatnonzero(keep)], append=True)
 
 
+BRIDGE_RAYS = 72          # neck bridge: each neck is measured along this many rays from its centre line
+BRIDGE_REACH = 1.6        # a neck ring stays within this many neck radii, else the slice is shoulders or a chin
+BRIDGE_MISSING = 0.1      # and at most this share of the rays may find nothing (a small hole)
+BRIDGE_STEP = 0.005       # the search for each ring moves by this share of the head's height
+BRIDGE_GAP = 0.02         # the least height between the two rings, same measure
+BRIDGE_SEARCH = 0.25      # how far from the cut either ring may sit, same measure
+BRIDGE_TALL = 0.15        # a bridge taller than this is worth a human's glance
+BRIDGE_INSET = 0.985      # the bridge sits this far inside both necks, out of sight,
+BRIDGE_TUCK = 0.03        # and runs this share of the head's height past each cut edge
+BRIDGE_WALL = 0.12        # along a ray from the centre line, a gap wider than this share of the distance so far
+                          # ends the neck (its two walls); what lies beyond is a collar
+BRIDGE_FLARE = 1.5        # the body's ring is never taken as wider than this many times the head's
+BRIDGE_BAND = 0.08        # the centre line comes from the lowest this share (of the head's height) of the new head
+BRIDGE_SMOOTH = 5         # rays in the running median and mean that even out each ring
+
+
+def ring_segments(mesh, height: float, axis: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+    """MESH's cross-section at HEIGHT: its line segments (n, 2, 2) in (x, z) measured from AXIS, and the
+    texture position (UV) of each segment end (n, 2, 2), None for a mesh without UVs."""
+    import trimesh
+
+    lines, faces = trimesh.intersections.mesh_plane(mesh, [0.0, 1.0, 0.0], [0.0, height, 0.0], return_faces=True)
+    uv = getattr(mesh.visual, "uv", None)
+    has_uv = uv is not None and len(uv) == len(mesh.vertices)
+    if not len(lines):
+        return np.zeros((0, 2, 2)), (np.zeros((0, 2, 2)) if has_uv else None)
+    lines = np.asarray(lines, float)
+    ends = None
+    if has_uv:
+        corners = mesh.triangles[faces]
+        with np.errstate(divide="ignore", invalid="ignore"):     # a sliver triangle has no barycentric frame
+            ends = np.stack([np.einsum("nk,nkc->nc", trimesh.triangles.points_to_barycentric(corners, lines[:, k]),
+                                       np.asarray(uv, float)[mesh.faces[faces]]) for k in (0, 1)], axis=1)
+    return lines[:, :, [0, 2]] - np.asarray(axis, float), ends
+
+
+def ring_reach(segments: np.ndarray, angles: np.ndarray, ends: np.ndarray | None = None):
+    """How far from the centre the neck's skin is along each of ANGLES (0 = front, +z; a quarter turn on = +x),
+    from a cross-section's SEGMENTS; NaN where a ray meets nothing. With ENDS (the segments' UVs), also the UV
+    at each of those points.
+
+    A ray crosses the neck's inner wall, then its skin (a finished model is a double wall), then perhaps a
+    collar's two walls. The skin is the last crossing before the first wide gap: one over BRIDGE_WALL of
+    the distance already covered."""
+    angles = np.asarray(angles, float)
+    out = np.full(len(angles), np.nan)
+    where = np.full((len(angles), 2), np.nan)
+    if len(segments) and len(angles):
+        a, e = segments[:, 0], segments[:, 1] - segments[:, 0]
+        d = np.stack([np.sin(angles), np.cos(angles)], axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            den = d[:, None, 0] * e[None, :, 1] - d[:, None, 1] * e[None, :, 0]
+            t = (a[None, :, 0] * e[None, :, 1] - a[None, :, 1] * e[None, :, 0]) / den
+            s = (a[None, :, 0] * d[:, None, 1] - a[None, :, 1] * d[:, None, 0]) / den
+        t[~((t > 0) & (s >= -1e-9) & (s <= 1 + 1e-9))] = np.inf      # misses and parallel segments
+        order = np.argsort(t, axis=1)
+        near = np.take_along_axis(t, order, axis=1)
+        far = np.append(near[:, 1:], np.full((len(angles), 1), np.inf), axis=1)
+        with np.errstate(invalid="ignore"):
+            last = np.argmax(far - near > BRIDGE_WALL * near, axis=1)     # the first wide gap (or the end)
+        rows = np.arange(len(angles))
+        best = order[rows, last]
+        hit = np.isfinite(near[rows, last])
+        out[hit] = near[rows, last][hit]
+        if ends is not None:
+            along = np.clip(s[rows, best], 0.0, 1.0)[:, None]
+            where[hit] = (ends[best, 0] + along * (ends[best, 1] - ends[best, 0]))[hit]
+    return out if ends is None else (out, where)
+
+
+def bridge_angles() -> np.ndarray:
+    """The angles a neck ring is measured at (see `ring_reach`)."""
+    return np.linspace(-np.pi, np.pi, BRIDGE_RAYS, endpoint=False)
+
+
+def bridge_ring(mesh, height: float, axis: np.ndarray, reach: float,
+              missing: float = BRIDGE_MISSING) -> np.ndarray | None:
+    """MESH's neck at HEIGHT as a radius from AXIS at each of `bridge_angles`, evened out; None if the slice
+    is not a neck: over MISSING of the rays find nothing (a ragged edge), or it runs further than REACH
+    (the shoulders, a chin). A few missing rays take their neighbours' radius; a running median then drops
+    the odd ray that caught a collar or the inner wall."""
+    angles = bridge_angles()
+    radius = ring_reach(ring_segments(mesh, height, axis)[0], angles)
+    seen = ~np.isnan(radius)
+    if seen.mean() < 1 - missing or radius[seen].max() > reach:
+        return None
+    radius = np.interp(angles, angles[seen], radius[seen], period=2 * np.pi)
+    radius = ndimage.median_filter(radius, size=BRIDGE_SMOOTH, mode="wrap")
+    return ndimage.uniform_filter1d(radius, size=BRIDGE_SMOOTH, mode="wrap")
+
+
+def ring_angle(points: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """The angle of each of POINTS (x, y, z) round AXIS (x, z), as `ring_reach` counts them."""
+    return np.arctan2(points[:, 0] - axis[0], points[:, 2] - axis[1])
+
+
+def cut_neck(mesh, height: float, axis: np.ndarray, limit, above: bool = True):
+    """MESH without its neck on one side of HEIGHT (above it, or below), cut straight: what stands there no
+    further from AXIS than LIMIT (one radius, or one for each of `bridge_angles`). What is further out (a
+    collar, the shoulders) stays; the few triangles that join the two on that side go whole."""
+    v = mesh.vertices
+    side = v[:, 1] > height if above else v[:, 1] < height
+    if np.ndim(limit):
+        limit = np.interp(ring_angle(v, axis), bridge_angles(), limit, period=2 * np.pi)
+    gone = side & (np.hypot(v[:, 0] - axis[0], v[:, 2] - axis[1]) < limit)
+    f = mesh.faces
+    trimmed = mesh.copy()
+    trimmed.update_faces(~(gone[f].any(axis=1) & (side & ~gone)[f].any(axis=1)))
+    return clip_below(trimmed, gone, height)
+
+
+def neck_centre(head, head_height: float) -> np.ndarray:
+    """The centre line (x, z) of a grafted head's neck: the middle of its lowest BRIDGE_BAND. The graft's own
+    axis (`neck_core`) leans towards the chin, which is fine for splitting neck from collar by distance but
+    not for looking round the neck from inside it."""
+    v = head.vertices
+    band = v[v[:, 1] < v[:, 1].min() + BRIDGE_BAND * head_height][:, [0, 2]]
+    return (np.percentile(band, 2, axis=0) + np.percentile(band, 98, axis=0)) / 2
+
+
+def neck_paint(head, height: float, axis: np.ndarray) -> np.ndarray | None:
+    """One texture position (UV) for the whole bridge: HEAD's own neck skin at HEIGHT, at the point whose
+    colour is closest to the usual one (the median) across the front half. One colour, because the ring
+    runs through the shadow under the jaw and through scuffed paint, and a bridge painted angle by angle
+    came out striped. The front half, because the back of a head built from a front crop is often pale.
+    None for a head without UVs."""
+    segments, ends = ring_segments(head, height, axis)
+    if ends is None:
+        return None
+    angles = np.linspace(-np.pi / 2, np.pi / 2, 2 * BRIDGE_RAYS)
+    radius, uv = ring_reach(segments, angles, ends)
+    uv = uv[~np.isnan(radius) & ~np.isnan(uv).any(axis=1)]
+    if not len(uv):
+        return None
+    image = getattr(head.visual.material, "baseColorTexture", None)
+    if image is None:
+        return uv[len(uv) // 2]
+    colour = sample_texture(image, uv)
+    return uv[np.linalg.norm(colour - np.median(colour, axis=0), axis=1).argmin()]
+
+
+def bridge_neck(body, head, cut: float, ring: float, head_height: float):
+    """Close the seam between BODY's neck and the new HEAD's: (body, head, report).
+
+    After the graft the two necks overlap as two ragged edges that are not joined, and an open neckline
+    shows holes and the old stump between them. Both are cut straight where each is still a whole ring
+    (the body's just under CUT, the head's the lowest it has), and a smooth tube of triangles is added to
+    the head between the two. The tube sits a little inside both necks and runs on past each cut edge (in
+    the head, up to where its neck has no holes), so no edge has to meet another and what shows between them is the tube. It has one colour, the
+    head's own neck skin: the body's paint under the old chin is shadow. A collar round the neck is left
+    alone (`ring_reach`). RING is the neck's radius; HEAD_HEIGHT sets the scale. Nothing changes, and the
+    report says why, when either neck has no whole ring near the cut, or when the head's neck already
+    reaches down into the body all the way round (no seam shows)."""
+    import trimesh
+
+    axis = neck_centre(head, head_height)
+    reach, step = BRIDGE_REACH * ring, BRIDGE_STEP * head_height
+    span, gap, tuck = BRIDGE_SEARCH * head_height, BRIDGE_GAP * head_height, BRIDGE_TUCK * head_height
+
+    def find(mesh, heights, missing=BRIDGE_MISSING):
+        for y in heights:
+            radius = bridge_ring(mesh, float(y), axis, reach, missing)
+            if radius is not None:
+                return float(y), radius
+        return None, None
+
+    low, foot = find(body, np.arange(cut - step, cut - span, -step))
+    if low is None:
+        return body, head, {"skipped": "the body's neck is not a whole ring under the cut"}
+    if bridge_ring(head, low, axis, reach) is not None:
+        # e.g. a head that sits down inside a collar: the seam is out of sight and a bridge would only add edges
+        return body, head, {"skipped": "the new head's neck already reaches into the body all the way round",
+                            "expected": True}
+    start = max(low + gap, float(head.vertices[:, 1].min()) + step)
+    high, top = find(head, np.arange(start, cut + span, step))
+    if high is None:
+        return body, head, {"skipped": "the new head has no whole ring of neck under its chin"}
+    # The head's ring may have small holes, and its ragged edge can reach a little higher still: the tube
+    # runs on inside the head to where its neck has none.
+    sealed, inner = find(head, np.arange(high + step, cut + span, step), missing=0.0)
+    if sealed is None:
+        sealed, inner = high, top
+    foot = np.minimum(foot, BRIDGE_FLARE * top)
+    spot = neck_paint(head, high, axis)
+    body = cut_neck(body, low, axis, (1 + BRIDGE_WALL / 2) * foot)
+    head = cut_neck(head, high, axis, reach, above=False)
+
+    angles = bridge_angles()
+    direction = np.stack([np.sin(angles), np.cos(angles)], axis=1)
+    rows = [(low - tuck, foot), (low, foot), (high, top), (sealed + tuck, inner)]
+    points = np.concatenate([np.column_stack([axis[0] + BRIDGE_INSET * r * direction[:, 0], np.full(len(angles), y),
+                                              axis[1] + BRIDGE_INSET * r * direction[:, 1]]) for y, r in rows])
+    n, first = len(angles), len(head.vertices)
+    here = np.arange(n)
+    there = (here + 1) % n
+    tris = np.concatenate([np.concatenate([
+        np.column_stack([first + (k + 1) * n + here, first + k * n + here, first + k * n + there]),
+        np.column_stack([first + (k + 1) * n + here, first + k * n + there, first + (k + 1) * n + there]),
+    ]) for k in range(len(rows) - 1)])
+    visual = head.visual.copy()
+    if spot is not None:
+        visual.uv = np.vstack([head.visual.uv, np.tile(spot, (len(points), 1))])
+    head = trimesh.Trimesh(np.vstack([head.vertices, points]), np.vstack([head.faces, tris]),
+                           visual=visual, process=False)
+    return body, head, {"body_at": round(low, 4), "head_at": round(high, 4), "faces": int(len(tris)),
+                        "centre": [round(float(c), 4) for c in axis],
+                        "height_share": round((high - low) / head_height, 3)}
+
+
+def bridge_notes(bridge: dict | None) -> list[str]:
+    """What a person should check about a neck bridge (`bridge_neck`'s report); empty when it went well."""
+    if not bridge:
+        return []
+    if "skipped" in bridge:
+        return [] if bridge.get("expected") else [f"the neck seam was not bridged: {bridge['skipped']}"]
+    if bridge["height_share"] > BRIDGE_TALL:
+        return [f"the neck bridge is tall ({bridge['height_share']:.0%} of the head's height): check the neck"]
+    return []
+
+
 def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=None, liner=LINER_SHRINK,
-          cut_at=None, skull_fit=False):
+          cut_at=None, skull_fit=False, neck_bridge=False):
     """Swap FULL's head region for HEAD (both trimesh meshes; HEAD is moved in place).
 
     CUT_AT: "neck" finds the neck (`neck_height`) and swaps only above it; a height (model
     units) cuts there, e.g. one a person marked; None swaps the whole head region.
+    NECK_BRIDGE closes the seam between the two necks (`bridge_neck`) when the cut sits under the
+    jaw (a bare neck or a tight collar); a wide collar hides its seam and is left alone.
 
     1. The real head: FULL's head bones. 2. HEAD placed by the crop box, then on the real
     head at the same centre and height. 3. Fine line-up, position only. 4. FULL loses the
@@ -601,11 +823,18 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
         pushed = neck_back_gap(part.vertices, full.vertices, cut, axis, ring,
                                NECK_BACK_SPAN * float(np.ptp(full.vertices[real, 1])))
         part.vertices = part.vertices - [0.0, 0.0, pushed]
+    bridge = None
+    if neck_bridge:
+        if tight:
+            body, part, bridge = bridge_neck(body, part, cut, ring, float(np.ptp(full.vertices[real, 1])))
+        else:
+            bridge = {"skipped": "the cut is not under the jaw (a wide collar, a marked height or the whole head)",
+                      "expected": True}
     report = {"head_bones": picked, "outline_margin_px": int(grow), "liner_shrink": liner,
               "liner_tucked": tucked, "liner_dropped_faces": int(liner_miss.sum()),
               "cut_at": None if cut is None else round(cut, 4),
               "neck_ring": None if ring is None else round(ring, 4),
-              "slid_back": round(pushed, 4),
+              "slid_back": round(pushed, 4), "neck_bridge": bridge,
               "scale_to_real_head": round(float(place[0, 0]), 4),
               "line_up_cost": float(cost), "body_faces": int(len(body.faces)),
               "head_faces": int(len(part.faces))}
