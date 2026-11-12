@@ -308,6 +308,20 @@ def main() -> int:
     parser.add_argument("--neck-bridge", action="store_true",
                         help="with --cut-at neck on a bare neck or tight collar: cut both necks straight and "
                              "close the seam between them with a strip of triangles (an open neckline shows it)")
+    parser.add_argument("--neck-fit", action="store_true",
+                        help="with --cut-at neck on a bare neck or tight collar: give the new head's neck the "
+                             "body's shape where they meet (no step round the neck). Only the neck under the jaw "
+                             "changes shape. With --neck-bridge too, the bridge is used only when the fit cannot be")
+    parser.add_argument("--neck-fit-body", type=float, default=None,
+                        help="with --neck-fit: the share (0 to 1) of the difference the body's neck stump takes, "
+                             "leaning and growing towards the head; the head's neck moves for the rest "
+                             "(default: hero.FIT_BODY)")
+    parser.add_argument("--neck-fit-paint-only", action="store_true",
+                        help="with --neck-fit: move nothing; only bring the head's neck paint to the body's at the "
+                             "seam and share the light across it (for two necks that already agree in shape)")
+    parser.add_argument("--neck-fit-depth", type=float, default=None,
+                        help="with --neck-fit: how far under the cut the base of the body's neck (collar included) "
+                             "changes shape, as a share of the head's height (default: hero.FIT_DEPTH)")
     parser.add_argument("--head-steps", type=int, default=None,
                         help="sampling steps for the head's own build (1 to 50; default: the engine's fast "
                              "setting). More steps follow the picture's face more closely and take longer")
@@ -460,10 +474,12 @@ def main() -> int:
         part_body, part_head, report = hero.graft(
             body_mesh, head_mesh, full_box, hero.picture_box(crop_pic), head_crop, crop_pic.width,
             bone, (cut.height, cut.width), liner=hero.LINER_SHRINK if args.liner is None else args.liner,
-            skull_fit=args.skull_fit, neck_bridge=args.neck_bridge,
+            skull_fit=args.skull_fit, neck_bridge=args.neck_bridge, neck_fit=args.neck_fit,
+            neck_fit_body=args.neck_fit_body, neck_fit_depth=args.neck_fit_depth,
+            neck_fit_shape=not args.neck_fit_paint_only,
             cut_at=args.cut_at if args.cut_at in (None, "neck") else float(args.cut_at))
         run.say(f"graft {report}")
-        for note in hero.bridge_notes(report.get("neck_bridge")):
+        for note in hero.fit_notes(report.get("neck_fit")) + hero.bridge_notes(report.get("neck_bridge")):
             run.flag(note)
         # One piece: the head's paint and material always follow the body's own head.
         real = np.flatnonzero(np.isin(bone, picked))
@@ -491,9 +507,14 @@ def main() -> int:
         if not 0.85 < report["scale_to_real_head"] < 1.15:
             run.flag(f"the new head needed scaling by {report['scale_to_real_head']} to fit: check the fit")
         scene = trimesh.Scene()
-        for name, part in (("Body", part_body), ("Head", part_head)):
-            # Without normals a glTF renders every triangle flat.
-            part.vertex_normals = smooth_normals(part.vertices, part.faces)
+        # Without normals a glTF renders every triangle flat.
+        normals = [smooth_normals(part.vertices, part.faces) for part in (part_body, part_head)]
+        fit = report.get("neck_fit")
+        for seam in hero.fit_seams(fit, (fit or {}).get("head_height", 0.0)):
+            # Where a fitted neck's two edges meet, the parts share their normals so light does not break there.
+            normals = hero.seam_normals(list(zip((part_body.vertices, part_head.vertices), normals)), *seam)
+        for name, part, normal in (("Body", part_body, normals[0]), ("Head", part_head, normals[1])):
+            part.vertex_normals = normal
             scene.add_geometry(part, node_name=name)
         scene.export(grafted, include_normals=True)
         (out / "graft.json").write_text(json.dumps({"crop": crop, **report}, indent=2))
@@ -541,7 +562,7 @@ def main() -> int:
         "components": [c for s in sub_runs for c in s.get("components", [])] + LICENCES,
         "unsure": run.unsure,
         "parameters": {"body_faces": args.body_faces, "head_faces": args.head_faces, "seed": args.seed,
-                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge,
+                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge, "neck_fit": args.neck_fit, "neck_fit_body": args.neck_fit_body, "neck_fit_depth": args.neck_fit_depth, "neck_fit_paint_only": args.neck_fit_paint_only,
                        "crop": list(crop), "head_bones": picked},
         "sub_runs": sub_run_paths,
     }
