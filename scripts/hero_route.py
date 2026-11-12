@@ -322,6 +322,10 @@ def main() -> int:
     parser.add_argument("--neck-fit-depth", type=float, default=None,
                         help="with --neck-fit: how far under the cut the base of the body's neck (collar included) "
                              "changes shape, as a share of the head's height (default: hero.FIT_DEPTH)")
+    parser.add_argument("--keep-collar", action="store_true",
+                        help="with --cut-at neck where the cut under the jaw sits inside a stand collar: the body "
+                             "keeps all of its collar and the new head loses its own copy of it (told apart by "
+                             "paint: cloth against the face's skin)")
     parser.add_argument("--head-steps", type=int, default=None,
                         help="sampling steps for the head's own build (1 to 50; default: the engine's fast "
                              "setting). More steps follow the picture's face more closely and take longer")
@@ -477,9 +481,11 @@ def main() -> int:
             skull_fit=args.skull_fit, neck_bridge=args.neck_bridge, neck_fit=args.neck_fit,
             neck_fit_body=args.neck_fit_body, neck_fit_depth=args.neck_fit_depth,
             neck_fit_shape=not args.neck_fit_paint_only,
+            keep_collar=args.keep_collar,
             cut_at=args.cut_at if args.cut_at in (None, "neck") else float(args.cut_at))
         run.say(f"graft {report}")
-        for note in hero.fit_notes(report.get("neck_fit")) + hero.bridge_notes(report.get("neck_bridge")):
+        for note in (hero.fit_notes(report.get("neck_fit")) + hero.bridge_notes(report.get("neck_bridge"))
+                     + hero.own_notes(report.get("own_collar"))):
             run.flag(note)
         # One piece: the head's paint and material always follow the body's own head.
         real = np.flatnonzero(np.isin(bone, picked))
@@ -562,7 +568,7 @@ def main() -> int:
         "components": [c for s in sub_runs for c in s.get("components", [])] + LICENCES,
         "unsure": run.unsure,
         "parameters": {"body_faces": args.body_faces, "head_faces": args.head_faces, "seed": args.seed,
-                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge, "neck_fit": args.neck_fit, "neck_fit_body": args.neck_fit_body, "neck_fit_depth": args.neck_fit_depth, "neck_fit_paint_only": args.neck_fit_paint_only,
+                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge, "neck_fit": args.neck_fit, "neck_fit_body": args.neck_fit_body, "neck_fit_depth": args.neck_fit_depth, "neck_fit_paint_only": args.neck_fit_paint_only, "keep_collar": args.keep_collar,
                        "crop": list(crop), "head_bones": picked},
         "sub_runs": sub_run_paths,
     }
