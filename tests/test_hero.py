@@ -468,3 +468,270 @@ def test_bridge_notes_flags_a_tall_bridge_only():
     from image_to_3dlab.hero import bridge_notes
     assert bridge_notes(None) == [] and bridge_notes({"height_share": 0.05}) == []
     assert "tall" in bridge_notes({"height_share": 0.2})[0]
+
+
+def _ring_at(mesh, height, axis=(0.0, 0.0)):
+    from image_to_3dlab.hero import fit_angles, ring_reach, ring_segments
+    return ring_reach(ring_segments(mesh, height, np.asarray(axis, float))[0], fit_angles())
+
+
+def test_split_at_puts_a_ring_of_points_on_the_plane_and_keeps_the_shape():
+    from image_to_3dlab.hero import split_at
+    tube = _tube(0.04, 0.0, 0.1, rings=3)
+    cut = split_at(tube, 0.05)
+    on_plane = np.isclose(cut.vertices[:, 1], 0.05)
+    assert on_plane.sum() == 96 and len(cut.visual.uv) == len(cut.vertices)   # one new point on every crossing edge
+    assert cut.area == pytest.approx(tube.area)
+    assert not ((cut.vertices[cut.faces][:, :, 1].max(axis=1) > 0.05 + 1e-9)
+                & (cut.vertices[cut.faces][:, :, 1].min(axis=1) < 0.05 - 1e-9)).any()
+    assert cut.visual.uv[on_plane][:, 1] == pytest.approx(0.5)
+    assert split_at(tube, 0.5) is tube                                       # nothing crosses: nothing changes
+
+
+def test_tint_paint_changes_only_the_triangles_that_have_a_tint():
+    import trimesh
+
+    from image_to_3dlab.hero import tint_paint
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    uv = np.array([[0, 0], [0.4, 0], [0, 0.4], [1, 1]], float)
+    material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (64, 64), (100, 100, 100)))
+    mesh = trimesh.Trimesh(v, [[0, 1, 2]], visual=trimesh.visual.TextureVisuals(uv=uv, material=material), process=False)
+    tint = np.zeros((4, 3))
+    tint[:3] = [0.2, 0.0, -0.1]
+    out = np.asarray(tint_paint(mesh, tint))
+    assert tuple(out[60, 3]) == (151, 100, 74)          # inside the triangle (v runs up the picture)
+    assert tuple(out[5, 60]) == (100, 100, 100)         # far from it
+    assert np.asarray(tint_paint(mesh, np.zeros((4, 3)))).tolist() == np.asarray(material.baseColorTexture).tolist()
+
+
+def test_fit_neck_gives_a_slim_neck_the_body_s_shape_and_leaves_the_head_above_alone():
+    from scipy.spatial import cKDTree
+
+    from image_to_3dlab.hero import fit_neck, fit_notes
+    body = _tube(0.040, 0.10, 0.30)
+    head = _tube(0.032, 0.27, 0.50)
+    head.vertices = head.vertices + [0.0, 0.0, 0.004]                  # slimmer, and standing further forward
+    new_body, new_head, report = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2, body_share=0.0)
+    assert "skipped" not in report and fit_notes(report) == [] and report["collar_share"] == 0
+    low, top = report["body_at"], report["top"]
+    assert _ring_at(new_head, low + 1e-4) == pytest.approx(_ring_at(new_body, low - 1e-4), rel=0.02)   # one ring
+    assert _ring_at(new_head, low + 1e-4).min() > 0.039
+    assert top - report["head_at"] <= 0.12 * 0.2 + 1e-9
+    far, _ = cKDTree(head.vertices).query(new_head.vertices[new_head.vertices[:, 1] > top])
+    assert far.max() < 1e-12                                           # above the fit nothing moved
+    tucked = new_head.vertices[new_head.vertices[:, 1] < low - 1e-6]
+    assert len(tucked) and np.hypot(tucked[:, 0], tucked[:, 2]).max() <= 0.040 + 1e-9     # inside the body
+    lowest = tucked[np.isclose(tucked[:, 1], tucked[:, 1].min())]
+    assert np.hypot(lowest[:, 0], lowest[:, 2]).max() < 0.0396      # about 0.985 of it (BRIDGE_INSET), seen from the body's axis
+    assert new_head.vertices[:, 1].min() == pytest.approx(low - 0.015 * 0.2)
+    assert len(new_head.faces) < len(head.faces) + 400 and len(new_head.visual.uv) == len(new_head.vertices)
+
+
+def test_fit_neck_pulls_a_neck_that_ends_too_high_down_onto_the_body():
+    from image_to_3dlab.hero import fit_neck
+    body = _tube(0.040, 0.10, 0.30)
+    head = _tube(0.036, 0.30, 0.50, ragged=(0.30, 0.315))             # ragged, and whole only well above the body
+    _, new_head, report = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2, body_share=0.0)
+    assert report["moved_down"] > 0.01
+    low = report["body_at"]
+    ring = _ring_at(new_head, low + 1e-4)
+    assert not np.isnan(ring).any() and ring == pytest.approx(0.040, rel=0.02)   # no gap, no step
+    assert new_head.vertices[:, 1].min() < low
+    heights = np.sort(np.unique(np.round(new_head.vertices[:, 1], 6)))
+    assert np.diff(heights).max() < 0.02                               # stretched, not torn
+
+
+def test_fit_neck_leaves_cloth_and_torn_necks_alone():
+    import trimesh
+
+    from image_to_3dlab.hero import fit_neck, fit_notes
+    head = _tube(0.032, 0.27, 0.50)
+    collar = _tube(0.040, 0.10, 0.30)
+    collar.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (8, 8), (120, 30, 30)))
+    same_body, same_head, report = fit_neck(collar, head, cut=0.30, ring=0.04, head_height=0.2)
+    assert same_body is collar and same_head is head and "collar" in report["skipped"] and fit_notes(report) == []
+    torn = _tube(0.040, 0.10, 0.30, ragged=(0.20, 0.31))
+    same_body, same_head, report = fit_neck(torn, head, cut=0.30, ring=0.04, head_height=0.2)
+    assert same_body is torn and same_head is head
+    assert fit_notes(report) == ["the new neck was not fitted to the body's: the body's neck is not a whole ring under the cut"]
+    assert fit_notes(None) == []
+
+
+def test_fit_neck_takes_the_body_s_skin_colour_at_the_edge_and_fades_it_out():
+    import trimesh
+
+    from image_to_3dlab.hero import fit_neck, sample_texture
+    body = _tube(0.040, 0.10, 0.30)
+    body.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (8, 8), (180, 135, 110)))
+    head = _tube(0.036, 0.27, 0.50)
+    head.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (256, 256), (200, 150, 120)))
+    _, new_head, report = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2, body_share=0.0)
+    assert report["paint_matched"] and report["paint_change"] == pytest.approx(20 / 255, abs=0.01)
+    picture = new_head.visual.material.baseColorTexture
+    assert head.visual.material.baseColorTexture.getpixel((5, 5)) == (200, 150, 120)      # the head handed in keeps its paint
+    v, uv = new_head.vertices, new_head.visual.uv
+    edge = np.abs(v[:, 1] - report["body_at"]) < 1e-6
+    high = v[:, 1] > report["top"] + 0.02
+    assert sample_texture(picture, uv[edge]) * 255 == pytest.approx(np.tile([180, 135, 110], (edge.sum(), 1)), abs=3)
+    assert sample_texture(picture, uv[high]) * 255 == pytest.approx(np.tile([200, 150, 120], (high.sum(), 1)), abs=1)
+
+
+def test_stump_room_is_the_free_skin_between_the_edge_and_a_collar():
+    import trimesh
+
+    from image_to_3dlab.hero import fit_angles, stump_room
+    bare = _tube(0.040, 0.10, 0.30)
+    foot = np.full(len(fit_angles()), 0.040)
+    assert stump_room(bare, 0.299, foot, np.zeros(2), 0.2) == pytest.approx(0.12 * 0.2 - 0.015 * 0.2, abs=0.002)
+    collared = trimesh.util.concatenate([bare, _tube(0.060, 0.10, 0.285)])
+    assert stump_room(collared, 0.299, foot, np.zeros(2), 0.2) == pytest.approx(0.299 - 0.285 - 0.015 * 0.2, abs=0.002)
+    shirt = _tube(0.040, 0.10, 0.30, rings=20)                          # same shape, but cloth from 0.29 down
+    picture = Image.new("RGB", (8, 200), (200, 150, 120))
+    picture.paste((240, 240, 235), (0, 10, 8, 200))
+    shirt.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=picture)
+    assert stump_room(shirt, 0.299, foot, np.zeros(2), 0.2).max() < 0.01
+
+
+def test_fit_stump_shrinks_the_whole_neck_base_as_one_field_and_leaves_the_rest_alone():
+    import trimesh
+
+    from image_to_3dlab.hero import FIT_DEPTH, fit_angles, fit_stump
+    skin, wall, collar, chest = (_tube(r, 0.10, 0.30) for r in (0.040, 0.038, 0.046, 0.100))
+    body = trimesh.util.concatenate([skin, wall, collar, chest])
+    rays = len(fit_angles())
+    new_body, report = fit_stump(body, 0.30, np.full(rays, 0.040), np.full(rays, 0.036), 0.0, np.zeros(2), 0.2)
+    assert report["rim"] == pytest.approx(0.036) and report["added_faces"] == 0
+    assert len(new_body.vertices) == len(body.vertices) and np.array_equal(new_body.faces, body.faces)
+    before, after = _radius(body), _radius(new_body)
+    top = np.isclose(body.vertices[:, 1], 0.30)
+    for radius in (0.040, 0.038, 0.046):                               # skin, inner wall and collar: one factor
+        assert after[top & np.isclose(before, radius)] == pytest.approx(0.9 * radius)
+    assert np.array_equal(new_body.vertices[before > 0.09], body.vertices[before > 0.09])          # the chest
+    deep = body.vertices[:, 1] <= 0.30 - FIT_DEPTH * 0.2
+    assert deep.any() and np.array_equal(new_body.vertices[deep], body.vertices[deep])
+    assert report["lowest"] > 0.30 - FIT_DEPTH * 0.2 and report["cloth_move"] == pytest.approx(0.0046, abs=2e-4)
+    order = np.argsort(body.vertices[np.isclose(before, 0.040), 1])
+    column = after[np.isclose(before, 0.040)][order]
+    assert (np.diff(column) <= 1e-12).all()                             # ever slimmer towards the edge, no dent
+    assert (after[np.isclose(before, 0.038)] < after[np.isclose(before, 0.040)]).all()             # walls never cross
+    same = fit_stump(body, 0.30, np.full(rays, 0.040), np.full(rays, 0.036), 0.0, np.zeros(2), 0.2, depth=0.0)[0]
+    assert np.array_equal(same.vertices, body.vertices)
+
+
+def test_fit_stump_grows_a_painted_strip_up_to_the_target_ring():
+    from image_to_3dlab.hero import fit_angles, fit_stump
+    body = _tube(0.040, 0.10, 0.30)
+    rays = len(fit_angles())
+    new_body, report = fit_stump(body, 0.30, np.full(rays, 0.040), np.full(rays, 0.036), 0.012, np.zeros(2), 0.2)
+    assert report["edge"] == pytest.approx(0.312) and report["added_faces"] == 288
+    assert _ring_at(new_body, 0.3119) == pytest.approx(0.036, rel=0.01)
+    assert not np.isnan(_ring_at(new_body, 0.306)).any()
+    assert len(new_body.visual.uv) == len(new_body.vertices)
+    strip = new_body.visual.uv[len(new_body.vertices) - 4 * 72 * 2:]
+    assert strip[:, 1].min() > 0.9                                      # painted from the skin right under the edge
+
+
+def test_fit_neck_lets_the_body_grow_up_so_the_head_s_neck_stays_as_it_is():
+    from image_to_3dlab.hero import fit_neck
+    body = _tube(0.040, 0.10, 0.30)
+    head = _tube(0.036, 0.30, 0.50, ragged=(0.30, 0.315))
+    pulled = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2, body_share=0.0)[2]
+    new_body, new_head, report = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2, body_share=1.0)
+    assert pulled["moved_down"] > 0.01 and pulled["paint_stretch_front"] > 1.3
+    assert report["moved_down"] == pytest.approx(0.0, abs=1e-9) and report["paint_stretch_front"] == pytest.approx(1.0)
+    assert report["body"]["grown_up"] == pytest.approx(pulled["moved_down"]) and report["widest_move"] < 0.0005
+    for y in np.linspace(report["body_at"] + 1e-4, report["seam_at"] - 1e-4, 5):
+        assert not np.isnan(_ring_at(new_body, y)).any()                # the strip closes the gap
+    assert _ring_at(new_head, report["seam_at"] + 1e-4) == pytest.approx(0.036, rel=0.02)
+    assert _ring_at(new_body, report["seam_at"] - 1e-4) == pytest.approx(0.036, rel=0.02)
+
+
+def test_seam_normals_gives_two_parts_one_set_of_normals_along_their_seam():
+    from image_to_3dlab.hero import fit_seams, seam_normals
+    from image_to_3dlab.pixal3d_native import smooth_normals
+    lower, upper = _tube(0.040, 0.20, 0.30, rings=4), _tube(0.040, 0.30, 0.40, rings=4)
+    upper.vertices[:, [0, 2]] *= (1 + 4 * (upper.vertices[:, 1] - 0.30))[:, None]      # a cone on a tube: a crease
+    parts = [(m.vertices, smooth_normals(m.vertices, m.faces)) for m in (lower, upper)]
+    at = [np.isclose(m.vertices[:, 1], 0.30) for m in (lower, upper)]
+    assert np.abs(parts[0][1][at[0]] - parts[1][1][at[1]]).max() > 0.1
+    new = seam_normals(parts, 0.30, [0.0, 0.0], 0.001)
+    assert new[0][at[0]] == pytest.approx(new[1][at[1]], abs=1e-9)
+    assert np.linalg.norm(new[0][at[0]], axis=1) == pytest.approx(1.0)
+    assert np.array_equal(new[0][~at[0]], parts[0][1][~at[0]]) and np.array_equal(new[1][~at[1]], parts[1][1][~at[1]])
+    inward = [(lower.vertices, -parts[0][1]), parts[1]]                 # an inner wall keeps its own normals
+    assert np.array_equal(seam_normals(inward, 0.30, [0.0, 0.0], 0.001)[0], -parts[0][1])
+    assert fit_seams({"skipped": "x"}, 0.2) == [] and fit_seams(None, 0.2) == []
+    assert [s[0] for s in fit_seams({"seam_at": 0.31, "body_at": 0.30, "centre": [0, 0]}, 0.2)] == [0.30, 0.31]
+
+
+def _half_collared_body():
+    """A neck tube whose front half (a quarter turn either side of the front) is painted as red cloth."""
+    import trimesh
+    body = _tube(0.040, 0.10, 0.30)
+    picture = Image.new("RGB", (256, 8), (120, 40, 35))
+    picture.paste((200, 150, 120), (64, 0, 192, 8))
+    body.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=picture)
+    return body
+
+
+def test_fit_neck_fits_the_bare_part_of_a_ring_and_leaves_the_part_under_a_collar_alone():
+    from scipy.spatial import cKDTree
+
+    from image_to_3dlab.hero import fit_neck, fit_seams, ring_angle
+    body, head = _half_collared_body(), _tube(0.036, 0.27, 0.50)
+    new_body, new_head, report = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2)
+    assert "skipped" not in report and 0.45 < report["collar_share"] < 0.7
+    assert report["cloth_rays"][0] == "." and "c" in report["cloth_rays"] and sum(report["covered"]) > 30
+    turn = np.abs(np.degrees(_angles()))
+    edge = _ring_at(new_body, report["body_at"] - 1e-4)
+    assert edge[turn > 135] == pytest.approx(0.036, rel=0.02)           # the bare part comes in to the head's neck,
+    assert edge[turn < 45] == pytest.approx(0.040, rel=0.005)           # the part under the collar stays
+    under = np.abs(np.degrees(ring_angle(body.vertices, np.zeros(2)))) < 55
+    far, _ = cKDTree(new_body.vertices).query(body.vertices[under])
+    assert far.max() == 0                                               # the collar: every point where it was
+    kept = np.abs(np.degrees(ring_angle(head.vertices, np.zeros(2)))) < 55
+    far, _ = cKDTree(new_head.vertices).query(head.vertices[kept])
+    assert far.max() == 0                                               # behind it the head keeps all it had
+    bare = np.abs(np.degrees(ring_angle(new_head.vertices, np.zeros(2)))) > 135
+    assert new_head.vertices[bare, 1].min() > 0.29                      # on the bare part it is cut and seated
+    assert fit_seams(report, 0.2)[0][3] == report["covered"]
+    whole = _tube(0.040, 0.10, 0.30)
+    whole.visual.material = body.visual.material.copy()
+    whole.visual.material.baseColorTexture = Image.new("RGB", (8, 8), (120, 40, 35))
+    assert "collar" in fit_neck(whole, head, cut=0.30, ring=0.04, head_height=0.2)[2]["skipped"]
+
+
+def test_fit_neck_calls_lit_skin_skin_and_only_another_hue_or_a_wide_ring_cloth():
+    import trimesh
+
+    from image_to_3dlab.hero import fit_neck
+    head = _tube(0.036, 0.27, 0.50)                                     # skin (200, 150, 120)
+    pale = _tube(0.040, 0.10, 0.30)
+    pale.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (8, 8), (255, 205, 168)))
+    assert fit_neck(pale, head, cut=0.30, ring=0.04, head_height=0.2)[2]["collar_share"] == 0      # brighter, same hue
+    loose = _tube(0.046, 0.10, 0.30)
+    loose.visual.material = pale.visual.material
+    assert "collar" in fit_neck(loose, head, cut=0.30, ring=0.04, head_height=0.2)[2]["skipped"]   # far, and far wider
+
+
+def test_fit_neck_can_match_the_paint_and_move_nothing():
+    import trimesh
+
+    from image_to_3dlab.hero import fit_neck, sample_texture
+    body = _tube(0.040, 0.10, 0.30)
+    body.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (8, 8), (180, 135, 110)))
+    head = _tube(0.040, 0.27, 0.50)
+    head.visual.material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (256, 256), (200, 150, 120)))
+    same_body, new_head, report = fit_neck(body, head, cut=0.30, ring=0.04, head_height=0.2, shape=False)
+    assert same_body is body and report["shape"] is False and report["paint_matched"] and report["moved_points"] == 0
+    assert np.array_equal(new_head.vertices, head.vertices) and np.array_equal(new_head.faces, head.faces)
+    picture = new_head.visual.material.baseColorTexture
+    low = np.abs(head.vertices[:, 1] - 0.2985) < 0.002
+    assert sample_texture(picture, head.visual.uv[low]) * 255 == pytest.approx(np.tile([180, 135, 110], (low.sum(), 1)), abs=3)
+    high = head.vertices[:, 1] > report["top"] + 0.02
+    assert sample_texture(picture, head.visual.uv[high]) * 255 == pytest.approx(np.tile([200, 150, 120], (high.sum(), 1)), abs=1)
+
+
+def _angles():
+    from image_to_3dlab.hero import fit_angles
+    return fit_angles()

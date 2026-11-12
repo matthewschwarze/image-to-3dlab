@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an open neckline showed holes and the old neck stump. Both are now cut straight and a smooth tube in the head's
   own skin colour sits just inside them. A collar is left standing, and nothing changes when the head already
   sits down inside the body all the way round. Off by default.
+- Hero route: `--neck-fit` makes one smooth neck where the new head meets the body (with `--cut-at neck`, when
+  the cut sits under the jaw). The new head is sized by its skull, so its neck came out thinner or ended higher
+  than the body's old one: a shelf under the chin, a thick stump, or a step ring. The neck keeps the new head's
+  width; the base of the body's neck, collar included, moves to it as one smooth field, the paint is blended
+  across the seam and the two edges share their light. Behind a collar that touches the neck nothing moves.
+  `--neck-fit-body`, `--neck-fit-depth` and `--neck-fit-paint-only` tune it. With `--neck-bridge` too, the
+  bridge runs only when the fit cannot. Off by default.
 - Hero route: `--head-steps N` sets the sampling steps for the head's own build. It used the engine's fast
   setting (8), which is tuned for whole models; a face gains from more.
 
