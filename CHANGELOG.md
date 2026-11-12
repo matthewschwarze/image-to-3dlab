@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across the seam and the two edges share their light. Behind a collar that touches the neck nothing moves.
   `--neck-fit-body`, `--neck-fit-depth` and `--neck-fit-paint-only` tune it. With `--neck-bridge` too, the
   bridge runs only when the fit cannot. Off by default.
+- Hero route: `--keep-collar` keeps a stand collar the body's own when the cut under the jaw sits inside it (a
+  short neck, the jaw hanging below the collar's rim). The new head used to bring its crop's collar with it: a
+  second collar over the first, ending in a ragged hem. The head now loses that copy, told from skin by paint,
+  and the old nape stays behind the collar as a liner. Off by default.
 - Hero route: `--head-steps N` sets the sampling steps for the head's own build. It used the engine's fast
   setting (8), which is tuned for whole models; a face gains from more.
 
@@ -31,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeat, which left a small hitch.
 - Crouch sneak no longer floats above the floor. A move whose feet never reach the floor is
   lowered until they do; jumps keep their height.
+- Hero route, `--neck-fit` and `--neck-bridge`: a new head that ended in a thin stalk to one side gave both a
+  centre line at the neck's edge. The fit refused ("the two necks differ too much") and the bridge cut the neck
+  away and left a rod. The centre line now comes from the first band of the head that is as wide as a neck.
+- Hero route, `--neck-fit`: the head's neck paint moves at most 8% towards the body's. On a short neck the
+  body's paint under the cut is the shadow beside its collar, and the new chin took it as a beard.
 - Hero route, `--cut-at neck` on a tight collar: the neck finder found nothing and the whole head was swapped.
   It now cuts just under the jaw from the body's side profile, drops the new head's loose collar scraps (but
   not its own neck skin), and slides the new head straight back until its neck meets the old neck's back.

@@ -735,3 +735,41 @@ def test_fit_neck_can_match_the_paint_and_move_nothing():
 def _angles():
     from image_to_3dlab.hero import fit_angles
     return fit_angles()
+
+
+def test_neck_centre_goes_past_a_stalk_under_the_head():
+    # pc_f01e (2026-11-13): the new head ended in a stalk a third of the neck wide, to one side. The fit and the
+    # bridge took the neck's centre line from it and measured both necks from their edge.
+    import trimesh
+
+    neck = _tube(0.05, 0.0, 0.2)
+    stalk = _tube(0.012, -0.03, 0.0)
+    stalk.apply_translation([-0.03, 0.0, 0.0])
+    head = trimesh.util.concatenate([neck, stalk])
+    off = hero.neck_centre(head, 0.2)
+    assert off[0] < -0.02                                    # the old answer: the stalk's own middle
+    assert np.allclose(hero.neck_centre(head, 0.2, ring=0.05), [0.0, 0.0], atol=0.004)
+    # A head whose lowest band is its neck gives the same centre either way.
+    assert np.allclose(hero.neck_centre(neck, 0.2, ring=0.05), hero.neck_centre(neck, 0.2))
+
+
+def test_cloth_paint_tells_cloth_from_shaded_skin():
+    skin = np.array([0.80, 0.55, 0.40])
+    paint = np.array([[0.80, 0.55, 0.40],      # skin
+                      [0.45, 0.31, 0.23],      # the same skin in shadow, or a beard: darker, same hue
+                      [0.17, 0.20, 0.28],      # a navy collar
+                      [0.90, 0.90, 0.90]])     # a pale rim
+    assert hero.cloth_paint(paint, skin).tolist() == [False, False, True, True]
+
+
+def test_drop_low_pieces_drops_what_came_free_under_the_rim_only():
+    import trimesh
+
+    head = _tube(0.05, 0.0, 0.3)
+    low = _tube(0.01, 0.0, 0.04)
+    low.apply_translation([0.2, 0.0, 0.0])
+    high = _tube(0.01, 0.2, 0.25)
+    high.apply_translation([0.2, 0.0, 0.0])
+    kept = hero.drop_low_pieces(trimesh.util.concatenate([head, low, high]), 0.1)
+    assert len(kept.faces) == len(head.faces) + len(high.faces)
+    assert len(hero.drop_low_pieces(head, 0.1).faces) == len(head.faces)
