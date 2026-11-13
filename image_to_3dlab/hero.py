@@ -852,10 +852,12 @@ def ring_paint(mesh, heights, axis: np.ndarray, angles: np.ndarray) -> np.ndarra
         return np.nanmedian(np.stack(rows), axis=0)
 
 
-def tint_paint(mesh, tint: np.ndarray):
+def tint_paint(mesh, tint: np.ndarray, toward: np.ndarray | None = None):
     """MESH's painted picture with TINT added: a colour change (RGB, 0..1) for each point, spread smoothly
     across every triangle that has one. Returns the new picture, or None for a mesh without one. The patch
-    grows a little past its triangles so the unpainted gaps between texture islands do not show as lines."""
+    grows a little past its triangles so the unpainted gaps between texture islands do not show as lines.
+    TOWARD (a colour): TINT is then a share (0..1, the same in each channel) and the picture goes that share of
+    the way to the colour, whatever was painted there (a highlight plus a change would come out white)."""
     image = getattr(getattr(mesh.visual, "material", None), "baseColorTexture", None)
     uv = getattr(mesh.visual, "uv", None)
     if image is None or uv is None or len(uv) != len(mesh.vertices):
@@ -884,6 +886,8 @@ def tint_paint(mesh, tint: np.ndarray):
     far, nearest = ndimage.distance_transform_edt(~done, return_indices=True)
     grown = (far > 0) & (far <= FIT_PAINT_GROW)
     change[grown] = change[nearest[0][grown], nearest[1][grown]]
+    if toward is not None:
+        change = np.clip(change, 0, 1) * (np.asarray(toward, float) - paint)
     out = Image.fromarray(np.round(np.clip(paint + change, 0, 1) * 255).astype(np.uint8), "RGB")
     if image.mode == "RGBA":
         out.putalpha(image.getchannel("A"))
@@ -1341,6 +1345,9 @@ OWN_GROW = 1              # the body keeps this many rings of its old skin along
 OWN_LAP = 0.02            # the new head stops short where its skin ends more than this share of its height over the cut
 OWN_TUCK = 0.015          # the new head's skin ends this share of the head's height under the cut, straight
 OWN_CAP = 1.6             # the cap over the cut reaches no further than this many neck radii from the neck's middle
+OWN_CLOSE = 0.04          # cloth this near the skin in colour (0..1, a channel, and in hue) cannot be told from it at all
+OWN_STRAY = 0.02          # the collar ends this share of the head's height over its rim: what is higher is a stray point
+OWN_PARTS = ("cap", "close", "liner", "patch")    # what `own_collar` does besides the split; each can be left out
 OWN_CORE = 0.05           # the neck's middle: that of the old skin up to this share of the head's height over the cut
 
 
@@ -1353,11 +1360,40 @@ def vertex_paint(mesh) -> np.ndarray | None:
     return sample_texture(image, np.asarray(uv, float))
 
 
-def cloth_paint(paint: np.ndarray, skin: np.ndarray) -> np.ndarray:
+def cloth_paint(paint: np.ndarray, skin: np.ndarray, limits: tuple[float, float] = (FIT_CLOTH, FIT_HUE)) -> np.ndarray:
     """Which PAINT colours are cloth, not SKIN: far from it in some channel (`FIT_CLOTH`) and in hue too
-    (`FIT_HUE`, each channel's share of the colour), so shaded skin and a beard stay skin."""
+    (`FIT_HUE`, each channel's share of the colour), so shaded skin and a beard stay skin. LIMITS replaces the
+    two (`close_limits`)."""
     hue = paint / np.maximum(paint.sum(axis=1, keepdims=True), 1e-6) - skin / max(float(skin.sum()), 1e-6)
-    return (np.abs(paint - skin).max(axis=1) > FIT_CLOTH) & (np.abs(hue).max(axis=1) > FIT_HUE)
+    return (np.abs(paint - skin).max(axis=1) > limits[0]) & (np.abs(hue).max(axis=1) > limits[1])
+
+
+def close_limits(skin: np.ndarray, cloth: np.ndarray) -> tuple[float, float] | None:
+    """The limits for `cloth_paint` when CLOTH is nearer SKIN than the usual ones allow (a rust-red top on brown
+    skin, pc_f04b): half the way from one to the other, in a channel and in hue. None when the usual limits do,
+    or when the two are too close to tell apart at all (`OWN_CLOSE`)."""
+    gap = float(np.abs(cloth - skin).max())
+    hue = float(np.abs(cloth / max(float(cloth.sum()), 1e-6) - skin / max(float(skin.sum()), 1e-6)).max())
+    if (gap > FIT_CLOTH and hue > FIT_HUE) or gap < OWN_CLOSE or hue < OWN_CLOSE:
+        return None
+    return min(gap / 2, FIT_CLOTH), min(hue / 2, FIT_HUE)
+
+
+def walled_in(faces: np.ndarray, spot: np.ndarray, loose: np.ndarray, heights: np.ndarray, top: float) -> np.ndarray:
+    """Which of the LOOSE points (one flag per vertex; SPOT numbers the places, `joined`) sit in a patch that
+    stays under TOP: a patch of the collar painted like skin, shut in by the collar. The old head's own skin
+    runs on up past TOP."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    edges = edges[loose[edges].all(axis=1)]
+    count = int(spot.max()) + 1
+    graph = coo_matrix((np.ones(len(edges)), (spot[edges[:, 0]], spot[edges[:, 1]])), shape=(count, count))
+    label = connected_components(graph, directed=False)[1][spot]
+    high = np.zeros(int(label.max()) + 1, bool)
+    high[label[loose & (heights >= top)]] = True
+    return loose & ~high[label]
 
 
 def joined(mesh) -> np.ndarray:
@@ -1426,7 +1462,8 @@ def end_straight(mesh, low: float):
     return clip_below(mesh, mesh.vertices[:, 1] < low, low)
 
 
-def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring: float, head_height: float):
+def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring: float, head_height: float,
+               without: tuple[str, ...] = ()):
     """(which of FULL's vertices are its collar above CUT, which of HEAD's triangles are the new head's copy of
     that collar, a report), or (None, None, why not). The report's "nape" marks FULL's old skin to keep as a
     liner (`graft` takes it out of the report).
@@ -1436,7 +1473,11 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     the new head, whole above the cut, brought the collar of its crop with it: a second collar over the first,
     ending in the ragged hem the crop's edge left (pc_m01b). The body's collar is the good one. It is the cloth
     (by paint, against the face's skin) that joins the cloth under the cut; the new head's copy is the head's
-    cloth in that colour up to a little above the body's rim."""
+    cloth in that colour up to a little above the body's rim.
+
+    WITHOUT leaves parts of this out (names from `OWN_PARTS`), for the model one of them spoils: "close" the
+    limits for cloth close to the skin in colour, "patch" keeping and repainting skin-coloured paint shut in on
+    the collar, "liner" the old nape kept behind the collar. ("cap" is `graft`'s: the cap over the cut.)"""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
@@ -1456,13 +1497,23 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     # Everything below is measured round the neck, so from its middle: the graft's own axis (`neck_core`) can sit
     # a centimetre to one side (pc_m03d), and then one side of the new neck counted as outside the collar and went,
     # and the old skin kept as a liner stood in the collar's open front. The old neck's skin just above the cut.
-    core = real & ~cloth_paint(body_paint, body_skin) & (v[:, 1] >= cut) & (v[:, 1] < cut + OWN_CORE * head_height)
+    # A top close to the skin in colour (pc_f04b: rust red on brown) passed for skin, so the body lost its collar
+    # at the cut and the new head's copy stood in its place. Then the limits come from the two colours themselves.
+    under = ~real & (v[:, 1] > cut - OWN_BELOW * head_height) & (v[:, 1] < cut) \
+        & (np.hypot(v[:, 0] - axis[0], v[:, 2] - axis[1]) < OWN_WIDE * ring)
+    limits = close_limits(body_skin, np.median(body_paint[under], axis=0)) if under.sum() >= MIN_SLICE_POINTS else None
+    if "close" in without:
+        limits = None
+    close, limits = limits is not None, limits or (FIT_CLOTH, FIT_HUE)
+    core = real & ~cloth_paint(body_paint, body_skin, limits) & (v[:, 1] >= cut) \
+        & (v[:, 1] < cut + OWN_CORE * head_height)
     middle = skin_middle(v[core])
     moved = None if middle is None else [round(float(d), 4) for d in middle - axis]
     axis = axis if middle is None else middle
     near = np.hypot(v[:, 0] - axis[0], v[:, 2] - axis[1]) < OWN_WIDE * ring
     top = cut + OWN_REACH * head_height
-    cloth = cloth_paint(body_paint, body_skin) & near & (v[:, 1] > cut - OWN_BELOW * head_height) & (v[:, 1] < top)
+    cloth = cloth_paint(body_paint, body_skin, limits) & near & (v[:, 1] > cut - OWN_BELOW * head_height) \
+        & (v[:, 1] < top)
     # The body's cloth as one sheet: flood from the cloth under the cut that is not the head's, through cloth.
     spot = joined(full)
     edges = np.vstack([full.faces[:, [0, 1]], full.faces[:, [1, 2]], full.faces[:, [2, 0]]])
@@ -1473,12 +1524,27 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     seeds = np.unique(label[cloth & ~real & (v[:, 1] < cut)])
     collar = cloth & np.isin(label, seeds)
     lifted = collar & (v[:, 1] >= cut)
+    all_edges = np.vstack([full.faces[:, [0, 1]], full.faces[:, [1, 2]], full.faces[:, [2, 0]]])
     if lifted.sum() < MIN_SLICE_POINTS:
         return None, None, {"skipped": "the body has no collar above the cut", "expected": True}
     rim = float(np.percentile(v[lifted, 1], 98))
     if rim - cut < OWN_LEAST * head_height:      # pc_f03: a neckline that touches the neck just above the cut
         return None, None, {"skipped": "the body's collar ends at the cut", "expected": True}
+    # A point or two in the collar's colour higher up the nape stood over the rim as a spike (pc_f04b).
+    lifted &= v[:, 1] < rim + OWN_STRAY * head_height
     colour = np.median(body_paint[lifted], axis=0)
+    # Paint on the collar that passes for skin (a pale band along the rim, a worn patch) went with the old head
+    # and left a hole in the collar's back (pc_f04b). The old head's skin runs on up past the rim; such a patch
+    # is shut in under it.
+    shut = walled_in(full.faces, spot, real & ~lifted & (v[:, 1] >= cut), v[:, 1], rim)
+    if "patch" in without:
+        shut &= False
+    lifted |= shut
+    # (Repainted with the collar round them, one ring out: the patch fades into it.)
+    by = np.zeros(count, bool)
+    by[spot[shut]] = True
+    by[spot[all_edges[by[spot[all_edges]].any(axis=1)]].ravel()] = True
+    shut_paint = by[spot] & lifted
     # What the new head has outside the collar's inner wall, under the rim, is no neck either (the skin its crop
     # had under the collar: it came out as flaps on the collar's back).
     def turn(points):
@@ -1500,9 +1566,10 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     # only: in front the old chin hangs in the same band).
     nape = real & ~lifted & (v[:, 1] >= cut) & (v[:, 1] < rim + OWN_OVER * head_height) \
         & (v[:, 2] < axis[1]) & np.isfinite(wall[turn(v)])
+    if "liner" in without:
+        nape &= False
     # The triangles between the collar and the old skin go whole (`clip_below`), and where the paint of a rim
     # point is already skin that tore the rim. A ring of old skin along the collar, inside it, keeps it whole.
-    all_edges = np.vstack([full.faces[:, [0, 1]], full.faces[:, [1, 2]], full.faces[:, [2, 0]]])
     sheet = lifted.copy()
     for _ in range(OWN_GROW):
         on = np.zeros(count, bool)
@@ -1517,7 +1584,7 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     # collar in colour, and stayed behind as scraps under the ear.
     import trimesh
 
-    low = cloth_paint(head_paint, head_skin) & (w[:, 1] < rim + OWN_OVER * head_height)
+    low = cloth_paint(head_paint, head_skin, limits) & (w[:, 1] < rim + OWN_OVER * head_height)
     like = low & (np.linalg.norm(head_paint - colour, axis=1) < np.linalg.norm(head_paint - head_skin, axis=1))
     copy = low[head.faces].sum(axis=1) >= 2
     flaps = outside[head.faces].all(axis=1)
@@ -1542,8 +1609,10 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     report = {"rim_above_cut": round(rim - cut, 4), "over": round(OWN_OVER * head_height, 4),
               "body_collar_points": int(lifted.sum()),
               "kept_from_the_cut": int((lifted & real).sum()), "head_copy_faces": int(copy.sum()),
-              "head_flap_faces": int(flaps.sum()), "centre_moved": moved,
+              "head_flap_faces": int(flaps.sum()), "centre_moved": moved, "close_colours": close,
               "nape_liner_points": int(nape.sum()), "nape": nape, "centre": axis,
+              "repainted_points": int(shut.sum()), "repaint": np.repeat(shut_paint[:, None], 3, axis=1).astype(float),
+              "colour": colour,
               "collar_colour": [round(float(c), 3) for c in colour]}
     return lifted, copy, report
 
@@ -1571,12 +1640,22 @@ def own_notes(own: dict | None) -> list[str]:
         return []
     if "skipped" in own:
         return [f"the body's own collar was not kept apart from the new head's: {own['skipped']}"]
-    return []
+    notes = []
+    if own.get("close_colours"):
+        notes.append("the collar is close to the skin in colour and was told from it by narrower limits: if part "
+                     "of the neck went with it, join again without \"close\"")
+    if own.get("repainted_points"):
+        notes.append(f"{own['repainted_points']} skin-coloured points on the collar were kept and repainted in its "
+                     "colour: if a flat patch shows on the collar, join again without \"patch\"")
+    if own.get("cap_faces") == 0 and "cap" not in own.get("without", ()):
+        notes.append("no cap was put over the cut (the necks are not a full ring there): look from above for a "
+                     "dark gap between them")
+    return notes
 
 
 def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=None, liner=LINER_SHRINK,
           cut_at=None, skull_fit=False, neck_bridge=False, neck_fit=False, neck_fit_body=None,
-          neck_fit_depth=None, neck_fit_shape=True, keep_collar=False):
+          neck_fit_depth=None, neck_fit_shape=True, keep_collar=False, keep_collar_without=()):
     """Swap FULL's head region for HEAD (both trimesh meshes; HEAD is moved in place).
 
     CUT_AT: "neck" finds the neck (`neck_height`) and swaps only above it; a height (model
@@ -1588,7 +1667,8 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
     NECK_FIT_BODY (0..1, default `FIT_BODY`) is the share of that the body's neck stump takes before the head's.
     NECK_FIT_SHAPE False keeps both necks' shapes and only matches the paint and the light across the seam.
     KEEP_COLLAR, same case: where the cut sits inside a stand collar, the body keeps all of its collar and
-    the new head loses its copy of it (`own_collar`).
+    the new head loses its copy of it (`own_collar`). KEEP_COLLAR_WITHOUT leaves parts of that out
+    (`OWN_PARTS`), for the one model a part spoils.
 
     1. The real head: FULL's head bones. 2. HEAD placed by the crop box, then on the real
     head at the same centre and height. 3. Fine line-up, position only. 4. FULL loses the
@@ -1598,6 +1678,9 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
     """
     import trimesh
 
+    unknown = sorted(set(keep_collar_without) - set(OWN_PARTS))
+    if unknown:
+        raise ValueError(f"keep_collar_without: unknown part {unknown[0]!r} (one of {', '.join(OWN_PARTS)})")
     picked = head_bones(bone, full.vertices[:, 1])
     real = np.isin(bone, picked)
     full_frame = frame(full.vertices, full_box)
@@ -1638,7 +1721,7 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
         cols = np.flatnonzero(outline.any(axis=0))
         grow = max(OUTLINE_GROW_PX, int(round(OUTLINE_GROW_SHARE * (cols.max() - cols.min()))))
     keep = on_mask(*project(head.vertices, full_frame), ndimage.binary_dilation(outline, iterations=grow))
-    tight = False
+    tight, over = False, None
     if cut_at == "neck":
         cut = neck_height(full.vertices[real, 1], full.vertices[real, 0])
         if cut is None:   # no collar inside the head region: look at the body's own profile below it
@@ -1647,6 +1730,7 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
             chin = chin_bottom(full.vertices, real)
             if chin is not None:
                 cut = min(cut, chin - CHIN_CLEAR * float(np.ptp(full.vertices[real, 1])))
+            over = collar_top(full.vertices, real) - cut
     else:
         cut = cut_at
     if cut is None:
@@ -1661,15 +1745,23 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
     own = copy = None
     if keep_collar:
         if tight:
-            stays, copy, own = own_collar(full, real, head, cut, axis, ring, float(np.ptp(full.vertices[real, 1])))
+            stays, copy, own = own_collar(full, real, head, cut, axis, ring, float(np.ptp(full.vertices[real, 1])),
+                                          tuple(keep_collar_without))
+            if keep_collar_without:
+                own["without"] = sorted(keep_collar_without)
             if stays is not None:
                 nape, middle = own.pop("nape"), own.pop("centre")
+                repaint, cloth = own.pop("repaint"), own.pop("colour")
                 swap &= ~(stays | nape)
         else:
             own = {"skipped": "the cut is not under the jaw (a wide collar, a marked height or the whole head)",
                    "expected": True}
     keep &= in_head
     body_mesh = full.copy()
+    if copy is not None and repaint.any():      # the collar's skin-coloured patches, now kept, in its own colour
+        material = full.visual.material.copy()
+        material.baseColorTexture = tint_paint(full, repaint, toward=cloth)
+        body_mesh.visual = trimesh.visual.TextureVisuals(uv=full.visual.uv, material=material)
     body_mesh.vertices, gone = liner_split(full.vertices, swap, liner)
     if copy is not None and nape.any():
         moved = body_mesh.vertices.copy()
@@ -1712,7 +1804,7 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
         pushed = neck_back_gap(whole, full.vertices, cut, axis, ring,
                                NECK_BACK_SPAN * float(np.ptp(full.vertices[real, 1])))
         part.vertices = part.vertices - [0.0, 0.0, pushed]
-    if copy is not None:
+    if copy is not None and "cap" not in keep_collar_without:
         part, own["cap_faces"] = cap_cut(body, part, (cut + low) / 2, middle, OWN_CAP * ring, (cut - low) / 3)
     bridge = fit = None
     hidden = {"skipped": "the body's own collar stands round the seam", "expected": True} if copy is not None else None
@@ -1738,6 +1830,8 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
               "liner_tucked": tucked, "liner_dropped_faces": int(liner_miss.sum()),
               "cut_at": None if cut is None else round(cut, 4),
               "neck_ring": None if ring is None else round(ring, 4),
+              "head_height": round(float(np.ptp(full.vertices[real, 1])), 4),
+              "collar_over_cut": None if over is None else round(float(over), 4),
               "slid_back": round(pushed, 4), "neck_fit": fit, "neck_bridge": bridge,
               **({"own_collar": own} if keep_collar else {}),
               "scale_to_real_head": round(float(place[0, 0]), 4),

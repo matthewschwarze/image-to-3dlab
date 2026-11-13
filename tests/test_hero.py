@@ -806,6 +806,61 @@ def test_end_straight_cuts_the_head_along_one_height():
     assert np.allclose(np.hypot(ring[:, 0], ring[:, 2]), 0.05, atol=0.003)      # the shape did not change
 
 
+def test_tint_paint_toward_a_colour_covers_what_was_painted_there():
+    import trimesh
+
+    from image_to_3dlab.hero import tint_paint
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    uv = np.array([[0, 0], [0.4, 0], [0, 0.4], [1, 1]], float)
+    material = trimesh.visual.material.PBRMaterial(baseColorTexture=Image.new("RGB", (64, 64), (250, 250, 250)))
+    mesh = trimesh.Trimesh(v, [[0, 1, 2]], visual=trimesh.visual.TextureVisuals(uv=uv, material=material), process=False)
+    share = np.zeros((4, 3))
+    share[:3] = 1.0
+    out = np.asarray(tint_paint(mesh, share, toward=np.array([0.6, 0.2, 0.2])))
+    assert tuple(out[60, 3]) == (153, 51, 51)           # the colour itself, not the pale paint plus a change
+    assert tuple(out[5, 60]) == (250, 250, 250)
+
+
+def test_close_limits_only_for_cloth_near_the_skin_in_colour():
+    from image_to_3dlab.hero import FIT_CLOTH, FIT_HUE, close_limits, cloth_paint
+    skin, rust = np.array([0.51, 0.33, 0.24]), np.array([0.58, 0.27, 0.22])     # pc_f04b
+    assert close_limits(skin, np.array([0.17, 0.23, 0.30])) is None             # blue on skin: the usual limits do
+    assert close_limits(skin, skin + 0.01) is None                              # bare skin under the cut
+    limits = close_limits(skin, rust)
+    assert limits is not None and limits[0] < FIT_CLOTH and limits[1] < FIT_HUE
+    shaded = skin * 0.8
+    paint = np.stack([rust, skin, shaded])
+    assert cloth_paint(paint, skin).tolist() == [False, False, False]
+    assert cloth_paint(paint, skin, limits).tolist() == [True, False, False]
+
+
+def test_walled_in_finds_the_patch_shut_in_under_the_top():
+    from image_to_3dlab.hero import walled_in
+    # Two strips of loose points: one stays under the top, one runs on up past it.
+    heights = np.array([0.0, 0.0, 0.1, 0.1, 0.0, 0.0, 0.5, 0.5, 0.0])
+    faces = np.array([[0, 1, 2], [1, 3, 2], [4, 5, 6], [5, 7, 6]])
+    loose = np.array([True] * 8 + [False])
+    assert walled_in(faces, np.arange(9), loose, heights, 0.3).tolist() == [True] * 4 + [False] * 5
+
+
+def test_graft_refuses_an_unknown_part_to_leave_out():
+    from image_to_3dlab.hero import OWN_PARTS, graft
+    with pytest.raises(ValueError, match="hat"):
+        graft(None, None, None, None, None, None, None, None, keep_collar=True, keep_collar_without=("hat",))
+    assert set(OWN_PARTS) == {"cap", "close", "liner", "patch"}
+
+
+def test_own_notes_say_what_to_leave_out_next():
+    from image_to_3dlab.hero import own_notes
+    assert own_notes(None) == []
+    assert own_notes({"skipped": "the body has no collar above the cut", "expected": True}) == []
+    plain = {"close_colours": False, "repainted_points": 0, "cap_faces": 144}
+    assert own_notes(plain) == []
+    notes = own_notes({"close_colours": True, "repainted_points": 5, "cap_faces": 0})
+    assert len(notes) == 3 and '"close"' in notes[0] and '"patch"' in notes[1] and "cap" in notes[2]
+    assert own_notes({**plain, "cap_faces": 0, "without": ["cap"]}) == []      # left out on purpose: nothing to say
+
+
 def test_cap_cut_closes_the_gap_between_a_slim_neck_and_a_wide_one():
     import trimesh
 
