@@ -308,6 +308,11 @@ def main() -> int:
                         help="with --cut-at neck where the cut under the jaw sits inside a stand collar: the body "
                              "keeps all of its collar and the new head loses its own copy of it (told apart by "
                              "paint: cloth against the face's skin)")
+    parser.add_argument("--keep-collar-without", default="",
+                        help="with --keep-collar: leave parts of it out, comma-separated, for the one model a part "
+                             "spoils: cap (the cap over the cut between the necks), close (narrower limits for a "
+                             "collar close to the skin in colour), patch (skin-coloured paint on the collar kept "
+                             "and repainted), liner (the old nape kept behind the collar)")
     parser.add_argument("--head-steps", type=int, default=None,
                         help="sampling steps for the head's own build (1 to 50; default: the engine's fast "
                              "setting). More steps follow the picture's face more closely and take longer")
@@ -457,6 +462,7 @@ def main() -> int:
             neck_fit_body=args.neck_fit_body, neck_fit_depth=args.neck_fit_depth,
             neck_fit_shape=not args.neck_fit_paint_only,
             keep_collar=args.keep_collar,
+            keep_collar_without=tuple(part for part in args.keep_collar_without.split(",") if part),
             cut_at=args.cut_at if args.cut_at in (None, "neck") else float(args.cut_at))
         run.say(f"graft {report}")
         for note in (hero.fit_notes(report.get("neck_fit")) + hero.bridge_notes(report.get("neck_bridge"))
@@ -543,7 +549,7 @@ def main() -> int:
         "components": [c for s in sub_runs for c in s.get("components", [])] + LICENCES,
         "unsure": run.unsure,
         "parameters": {"body_faces": args.body_faces, "head_faces": args.head_faces, "seed": args.seed,
-                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge, "neck_fit": args.neck_fit, "neck_fit_body": args.neck_fit_body, "neck_fit_depth": args.neck_fit_depth, "neck_fit_paint_only": args.neck_fit_paint_only, "keep_collar": args.keep_collar,
+                       "head_steps": args.head_steps, "neck_bridge": args.neck_bridge, "neck_fit": args.neck_fit, "neck_fit_body": args.neck_fit_body, "neck_fit_depth": args.neck_fit_depth, "neck_fit_paint_only": args.neck_fit_paint_only, "keep_collar": args.keep_collar, "keep_collar_without": args.keep_collar_without,
                        "crop": list(crop), "head_bones": picked},
         "sub_runs": sub_run_paths,
     }
