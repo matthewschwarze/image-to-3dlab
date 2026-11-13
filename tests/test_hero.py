@@ -804,3 +804,27 @@ def test_end_straight_cuts_the_head_along_one_height():
     assert np.isclose(cut.vertices[:, 1].max(), 0.2)
     ring = cut.vertices[np.isclose(cut.vertices[:, 1], 0.013)]
     assert np.allclose(np.hypot(ring[:, 0], ring[:, 2]), 0.05, atol=0.003)      # the shape did not change
+
+
+def test_cap_cut_closes_the_gap_between_a_slim_neck_and_a_wide_one():
+    import trimesh
+
+    def tube(radius):
+        mesh = trimesh.creation.cylinder(radius=radius, height=0.2, sections=48, cap=False)
+        mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))   # its length along y
+        mesh.visual = trimesh.visual.TextureVisuals(uv=np.zeros((len(mesh.vertices), 2)))
+        return mesh
+
+    body, head = tube(0.05), tube(0.03)
+    capped, faces = hero.cap_cut(body, head, 0.0, np.zeros(2), 0.2, 0.002)
+    new = capped.vertices[len(head.vertices):]
+    assert faces == 2 * hero.BRIDGE_RAYS == len(capped.faces) - len(head.faces)
+    assert len(capped.visual.uv) == len(capped.vertices)
+    far = np.hypot(new[:, 0], new[:, 2])
+    assert far.max() == pytest.approx(hero.BRIDGE_INSET * 0.05, rel=0.02)      # out to the wider neck, just inside it
+    assert sorted(set(np.round(new[:, 1], 6))) == [-0.001, 0.001]              # two sheets, a hair apart
+    normals = capped.face_normals[len(head.faces):]
+    assert (normals[:faces // 2, 1] > 0.99).all() and (normals[faces // 2:, 1] < -0.99).all()
+    # no wider than the reach, and nothing where neither neck is
+    assert np.hypot(*hero.cap_cut(body, head, 0.0, np.zeros(2), 0.04, 0.002)[0].vertices[len(head.vertices):][:, [0, 2]].T).max() < 0.04
+    assert hero.cap_cut(body, head, 0.5, np.zeros(2), 0.2, 0.002)[1] == 0
