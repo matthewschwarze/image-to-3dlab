@@ -773,3 +773,34 @@ def test_drop_low_pieces_drops_what_came_free_under_the_rim_only():
     kept = hero.drop_low_pieces(trimesh.util.concatenate([head, low, high]), 0.1)
     assert len(kept.faces) == len(head.faces) + len(high.faces)
     assert len(hero.drop_low_pieces(head, 0.1).faces) == len(head.faces)
+
+
+def test_skin_middle_is_the_middle_of_the_neck_not_where_the_graft_looked_from():
+    # pc_m03d (2026-11-13): the collar split measured round a point a centimetre to one side of the neck, so one
+    # side of the new neck counted as outside the collar and the old skin kept as a liner stood in its opening.
+    neck = _tube(0.05, 0.0, 0.02)
+    neck.apply_translation([0.011, 0.0, -0.006])
+    assert np.allclose(hero.skin_middle(neck.vertices), [0.011, -0.006], atol=0.002)
+    assert hero.skin_middle(neck.vertices[:5]) is None
+
+
+def test_stops_short_only_where_the_new_skin_ends_above_the_cut():
+    # The old skin stays as a liner where the new head ends above the cut, and nowhere else.
+    rays = np.repeat(np.arange(hero.OWN_RAYS), 6)
+    heights = np.tile(np.linspace(0.0, 0.1, 6), hero.OWN_RAYS)
+    back = rays < hero.OWN_RAYS // 2
+    heights[back] += 0.05                       # behind, the head's copy of the collar went: its skin ends higher
+    bare = rays == hero.OWN_RAYS - 1            # one direction with no skin at all
+    short = hero.stops_short(heights[~bare], rays[~bare], 0.02)
+    assert short[:hero.OWN_RAYS // 2].all()
+    assert not short[hero.OWN_RAYS // 2:-1].any()
+    assert short[-1]
+
+
+def test_end_straight_cuts_the_head_along_one_height():
+    head = _tube(0.05, -0.04, 0.2)
+    cut = hero.end_straight(head, 0.013)
+    assert np.isclose(cut.vertices[:, 1].min(), 0.013)
+    assert np.isclose(cut.vertices[:, 1].max(), 0.2)
+    ring = cut.vertices[np.isclose(cut.vertices[:, 1], 0.013)]
+    assert np.allclose(np.hypot(ring[:, 0], ring[:, 2]), 0.05, atol=0.003)      # the shape did not change

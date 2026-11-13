@@ -26,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hero route: `--keep-collar` keeps a stand collar the body's own when the cut under the jaw sits inside it (a
   short neck, the jaw hanging below the collar's rim). The new head used to bring its crop's collar with it: a
   second collar over the first, ending in a ragged hem. The head now loses that copy, told from skin by paint,
-  and the old nape stays behind the collar as a liner. Off by default.
+  and the old nape stays behind the collar as a liner.
+  A fold-down collar that is open in front works too: the split is measured from the middle of the old neck
+  (the graft's own centre line could sit a centimetre to one side, which cut one side of the new neck away),
+  the liner stays only where the new head ends above the cut, and the new head's throat ends in a straight
+  line just under the cut instead of hanging over the body's in shreds. Off by default.
 - Hero route: `--head-steps N` sets the sampling steps for the head's own build. It used the engine's fast
   setting (8), which is tuned for whole models; a face gains from more.
 

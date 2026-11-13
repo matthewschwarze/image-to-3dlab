@@ -1338,6 +1338,9 @@ OWN_RAYS = 48             # the collar's inner wall is measured in this many dir
 OWN_NAPE = 0.12           # the old nape kept behind the collar, as a liner under the new one, shrinks this much
 OWN_ALONG = 0.8           # (points at least this share of the wall's distance from the neck's centre line)
 OWN_GROW = 1              # the body keeps this many rings of its old skin along the collar: its rim stays whole
+OWN_LAP = 0.02            # the new head stops short where its skin ends more than this share of its height over the cut
+OWN_TUCK = 0.015          # the new head's skin ends this share of the head's height under the cut, straight
+OWN_CORE = 0.05           # the neck's middle: that of the old skin up to this share of the head's height over the cut
 
 
 def vertex_paint(mesh) -> np.ndarray | None:
@@ -1360,6 +1363,30 @@ def joined(mesh) -> np.ndarray:
     """One number per vertex of MESH, the same for vertices at the same place (a glTF mesh is split at every
     texture seam)."""
     return np.unique(np.round(mesh.vertices, 6), axis=0, return_inverse=True)[1].reshape(-1)
+
+
+def skin_middle(points: np.ndarray) -> np.ndarray | None:
+    """The middle (x, z) of a band of neck skin POINTS (x, y, z): half-way between its two sides, each way. None
+    with too few points to tell."""
+    if len(points) < MIN_SLICE_POINTS:
+        return None
+    flat = points[:, [0, 2]]
+    return (np.percentile(flat, 2, axis=0) + np.percentile(flat, 98, axis=0)) / 2
+
+
+def stops_short(heights: np.ndarray, rays: np.ndarray, level: float) -> np.ndarray:
+    """For each of OWN_RAYS directions round the neck: does the new head's skin (its points' HEIGHTS, each in
+    direction RAYS) end above LEVEL there? A direction with no skin at all stops short too."""
+    floor = np.full(OWN_RAYS, np.inf)
+    for k in range(OWN_RAYS):
+        if (rays == k).sum() >= 3:
+            floor[k] = np.percentile(heights[rays == k], 5)
+    return floor > level
+
+
+def end_straight(mesh, low: float):
+    """MESH without what hangs under the height LOW, cut along it in a straight line."""
+    return clip_below(mesh, mesh.vertices[:, 1] < low, low)
 
 
 def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring: float, head_height: float):
@@ -1389,6 +1416,13 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     body_skin, head_skin = skin_of(v, body_paint, real), skin_of(w, head_paint, np.ones(len(w), bool))
     if body_skin is None or head_skin is None:
         return None, None, {"skipped": "no face found to take the skin colour from"}
+    # Everything below is measured round the neck, so from its middle: the graft's own axis (`neck_core`) can sit
+    # a centimetre to one side (pc_m03d), and then one side of the new neck counted as outside the collar and went,
+    # and the old skin kept as a liner stood in the collar's open front. The old neck's skin just above the cut.
+    core = real & ~cloth_paint(body_paint, body_skin) & (v[:, 1] >= cut) & (v[:, 1] < cut + OWN_CORE * head_height)
+    middle = skin_middle(v[core])
+    moved = None if middle is None else [round(float(d), 4) for d in middle - axis]
+    axis = axis if middle is None else middle
     near = np.hypot(v[:, 0] - axis[0], v[:, 2] - axis[1]) < OWN_WIDE * ring
     top = cut + OWN_REACH * head_height
     cloth = cloth_paint(body_paint, body_skin) & near & (v[:, 1] > cut - OWN_BELOW * head_height) & (v[:, 1] < top)
@@ -1432,6 +1466,7 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
     # The triangles between the collar and the old skin go whole (`clip_below`), and where the paint of a rim
     # point is already skin that tore the rim. A ring of old skin along the collar, inside it, keeps it whole.
     all_edges = np.vstack([full.faces[:, [0, 1]], full.faces[:, [1, 2]], full.faces[:, [2, 0]]])
+    sheet = lifted.copy()
     for _ in range(OWN_GROW):
         on = np.zeros(count, bool)
         on[spot[lifted]] = True
@@ -1457,11 +1492,21 @@ def own_collar(full, real: np.ndarray, head, cut: float, axis: np.ndarray, ring:
         sizes = np.bincount(patch[seeds], minlength=int(patch.max()) + 1)
         copy &= sizes[patch] >= OWN_PATCH
     copy |= flaps
+    # The liner and the ring of old skin are for where the new head stops short of the cut once its copy of the
+    # collar is gone. Where its own skin comes down to the cut (beside the opening of a fold-down collar, pc_m03d)
+    # they stood next to the new neck as ragged scraps of the old one.
+    skin = np.zeros(len(w), bool)
+    skin[np.unique(head.faces[~copy])] = True
+    skin &= w[:, 1] < rim + OWN_OVER * head_height
+    short = stops_short(w[skin, 1], turn(w[skin]), cut + OWN_LAP * head_height)[turn(v)]
+    nape &= short
+    lifted = sheet | (lifted & short)
     lifted = lifted & ~nape
     report = {"rim_above_cut": round(rim - cut, 4), "over": round(OWN_OVER * head_height, 4),
               "body_collar_points": int(lifted.sum()),
               "kept_from_the_cut": int((lifted & real).sum()), "head_copy_faces": int(copy.sum()),
-              "head_flap_faces": int(flaps.sum()), "nape_liner_points": int(nape.sum()), "nape": nape,
+              "head_flap_faces": int(flaps.sum()), "centre_moved": moved,
+              "nape_liner_points": int(nape.sum()), "nape": nape,
               "collar_colour": [round(float(c), 3) for c in colour]}
     return lifted, copy, report
 
@@ -1614,6 +1659,11 @@ def graft(full, head, full_box, head_box, crop, head_width, bone, shape, grow=No
     part = head.submesh([np.flatnonzero(kept)], append=True)
     if copy is not None:
         part = drop_low_pieces(part, cut + own["rim_above_cut"] + own["over"])
+        # An open collar shows the throat: there the head's skin hung on under the cut, over the body's own, and
+        # ended in the ragged edge its copy of the collar left (pc_m03d). The body's throat is whole from the cut
+        # down, so the head ends just under it, in a straight line.
+        low = cut - OWN_TUCK * float(np.ptp(full.vertices[real, 1]))
+        part = end_straight(part, low)
     pushed = 0.0
     if tight:
         part = drop_scraps(part, cut, axis, ring)
