@@ -2302,3 +2302,21 @@ def test_back_version_changes_take_one_lock(tmp_path):
         api.BACK_VERSIONS_LOCK.release()
     t.join(2)
     assert not (tmp_path / body["version"]).exists()
+
+
+def test_run_folders_are_named_under_output_when_output_links_to_another_drive(tmp_path, monkeypatch):
+    # output/ as a link to another drive: job folders are resolved there, so a plain
+    # relative_to(REPO) raised and the studio showed an error for a run that had started.
+    repo, drive = tmp_path / "repo", tmp_path / "drive"
+    repo.mkdir()
+    (drive / "run__pixal3d__1").mkdir(parents=True)
+    (drive / "run__pixal3d__1" / "run.glb").write_bytes(b"glb")
+    (repo / "output").symlink_to(drive)
+    monkeypatch.setattr(api, "REPO", repo)
+    monkeypatch.setattr(api, "OUTPUT_ROOT", repo / "output")
+
+    assert api._repo_relative(drive / "run__pixal3d__1") == "output/run__pixal3d__1"
+    assert api._repo_relative(repo / "manifests") == "manifests"
+
+    job = types.SimpleNamespace(status="done", events=[], output_path=drive / "run__pixal3d__1" / "run.glb")
+    assert api._job_status_payload(job)["model"] == "run__pixal3d__1/run.glb"

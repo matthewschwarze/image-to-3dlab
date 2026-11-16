@@ -228,6 +228,15 @@ SF3D_ROCM_VENDOR = REPO / "vendor" / "stable-fast-3d"
 SF3D_ROCM_PYTHON = SF3D_ROCM_VENDOR / ".venv" / "bin" / "python"
 SF3D_ROCM_MARKER = SF3D_ROCM_VENDOR / ".i2l-build-complete"
 OUTPUT_ROOT = REPO / "output"
+
+
+def _repo_relative(path: Path) -> str:
+    """A run folder as the studio names it: `output/...`, even when `output` links to another drive."""
+    path = Path(path).resolve()
+    for base, prefix in ((OUTPUT_ROOT.resolve(), "output/"), (REPO, "")):
+        if path.is_relative_to(base):
+            return prefix + path.relative_to(base).as_posix()
+    return path.as_posix()
 BASELINE_PATH = REPO / "viewer" / "generate_baseline.json"  # shipped default, never written
 # Timings learned on this machine. Under output/ (git-ignored): writing the tracked file
 # above left every install with a local edit, and the installer then refused to update.
@@ -2693,9 +2702,11 @@ def _job_status_payload(job: Job) -> dict[str, Any]:
     the frontend can feed this straight into its existing applyGenerateProgress() renderer
     instead of a separate code path."""
     model = None
-    if job.status == "done" and OUTPUT_ROOT in job.output_path.parents and job.output_path.is_file():
+    output_root = OUTPUT_ROOT.resolve()  # output/ may link to another drive; job paths are resolved
+    landed = job.output_path.resolve()
+    if job.status == "done" and output_root in landed.parents and landed.is_file():
         # where the model landed, as the studio's Library names it, so a chain can carry on
-        model = job.output_path.relative_to(OUTPUT_ROOT).as_posix()
+        model = landed.relative_to(output_root).as_posix()
     return {"status": job.status, "last_event": job.events[-1] if job.events else None, "model": model}
 
 
@@ -3817,7 +3828,7 @@ class Handler(SimpleHTTPRequestHandler):
             usage_api.count_features(front_and_back=bool(settings.get("back_name")))
             threading.Thread(target=_run_job, args=(job,), daemon=True).start()
             self._send_json(202, {"job_id": job.id, "events_url": f"/api/generate/{job.id}/events",
-                                  "output_dir": str(job.directory.relative_to(REPO)),
+                                  "output_dir": _repo_relative(job.directory),
                                   "warning": warning})
         except Exception as exc:
             self._send_json(500, {"error": str(exc)})
