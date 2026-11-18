@@ -70,9 +70,10 @@ STUDIO_ONLY = {
     "api/animate/*/cancel": "via cancel_run", "api/rig/rebind/*/cancel": "via cancel_run",
 }
 # Server actions the tools below call.
-USED = {"api/chains", "api/chains/*/cancel", "api/setup/*/download", "api/reveal", "api/bug-report", "api/usage",
+USED = {"api/chains", "api/chains/*/cancel", "api/setup/*/download", "api/reveal", "api/roblox-export", "api/bug-report", "api/usage",
         "api/skins", "api/skins/*/try", "api/skins/*/approve", "api/skins/*/build", "api/skins/build/*/cancel",
-        "api/image/brush", "api/image/versions/use", "api/image/versions/delete"}
+        "api/image/brush", "api/image/versions/use", "api/image/versions/delete",
+        "api/addons/*/install", "api/addons/*/remove", "api/addons/*/run/*", "api/addons/jobs/*/cancel"}
 
 
 class StudioError(RuntimeError):
@@ -369,6 +370,11 @@ ADVANCED: dict[str, dict[str, Any]] = {
     "rig_from": {
         "step": "rigged", "type": "str", "choices": ["finished", "model"], "default": "finished",
         "what": "Which model gets the skeleton: the finished one, or the raw 3D model (skips Finish)."},
+    "bone_names": {
+        "step": "rigged", "type": "str", "choices": ["numbered", "unity"], "default": "numbered",
+        "what": "The skeleton's bone names. 'unity' gives the body bones Unity Humanoid names (Hips, Spine, "
+                "... LeftToes) and keeps at most four weights a vertex, so Unity maps the avatar on its own; "
+                "hair, capes and gear keep their names. 'numbered' keeps the rigger's bone_0, bone_1, ..."},
     "speed": {
         "step": "animated", "type": "float", "min": 0.5, "max": 2.0, "default": "the move's own pace",
         "what": "Playback speed of the move."},
@@ -434,6 +440,13 @@ def plan_extras(adv: dict[str, Any], detail: str | int | None, pixel_match: bool
     if adv["in_place"] is not None:      # false is a real choice here, so test for None
         move["in_place"] = adv["in_place"]
     return finish, move
+
+
+def rig_extras(adv: dict[str, Any], steps: list[str]) -> dict[str, Any]:
+    """rig_settings for a plan that rigs: only a bone names preset, the numbered default sends nothing."""
+    if "rigged" in steps and adv["bone_names"] not in (None, ADVANCED["bone_names"]["default"]):
+        return {"bone_names": adv["bone_names"]}
+    return {}
 
 
 def options() -> dict[str, Any]:
@@ -754,6 +767,8 @@ def create(studio: Studio, *, want: str, description: str = "", image_path: str 
         form["finish_settings"] = json.dumps(choices)
     if move_settings and "animated" in steps:
         form["move_settings"] = json.dumps(move_settings)
+    if rig_extras(adv, steps):
+        form["rig_settings"] = json.dumps(rig_extras(adv, steps))
     upload = _upload(image_path, (".png", ".jpg", ".jpeg", ".webp")) or _upload(model_path, (".glb",))
     files = {"file": upload} if upload else {}
     if back_image_path:
@@ -816,6 +831,8 @@ def continue_asset(studio: Studio, *, asset_id: str, up_to: str | None = None, w
         form["finish_settings"] = json.dumps(choices)
     if move_settings and "animated" in steps:
         form["move_settings"] = json.dumps(move_settings)
+    if rig_extras(adv, steps):
+        form["rig_settings"] = json.dumps(rig_extras(adv, steps))
     if "picture" in steps and asset.get("prompt"):
         form["prompt"] = asset["prompt"]
     if "model" in steps:
@@ -846,8 +863,35 @@ def continue_asset(studio: Studio, *, asset_id: str, up_to: str | None = None, w
     return out
 
 
+ADDON_RUN_PREFIX = "addon-"
+
+
+def addon_run_status(studio: Studio, job_id: str, wait_seconds: int,
+                     sleep: Callable[[float], None]) -> dict[str, Any]:
+    """An add-on run in the same words as any other run: status, log, and what it made."""
+    state = studio.get(f"api/addons/jobs/{job_id}/status")
+    deadline = time.time() + max(0, min(int(wait_seconds), WAIT_LIMIT))
+    while state.get("status") in ("queued", "running", "cancelling") and time.time() < deadline:
+        sleep(2)
+        state = studio.get(f"api/addons/jobs/{job_id}/status")
+    out: dict[str, Any] = {"id": ADDON_RUN_PREFIX + job_id, "status": state.get("status"),
+                           "title": f"Add-on {state.get('addon_id')}: {state.get('tool_id')}"}
+    if state.get("status") == "error":
+        out["error"] = state.get("error")
+        out["log"] = plain_log(state.get("log_tail"))[-1500:] or None
+    elif state.get("status") == "done":
+        result = state.get("result") or ""
+        out["made"] = {"model": result}
+        out["next"] = "Find the new model with list_assets, then preview it."
+    else:
+        out["log"] = plain_log(state.get("log_tail"))[-1500:] or None
+    return {k: v for k, v in out.items() if v not in (None, [], {})}
+
+
 def run_status(studio: Studio, *, run_id: str | None = None, wait_seconds: int = 0,
                sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    if run_id and run_id.startswith(ADDON_RUN_PREFIX):
+        return addon_run_status(studio, run_id[len(ADDON_RUN_PREFIX):], wait_seconds, sleep)
     if not run_id:
         chains = studio.get("api/chains")
         current = chains.get("running") or (chains.get("recent") or [None])[0]
@@ -864,6 +908,13 @@ def run_status(studio: Studio, *, run_id: str | None = None, wait_seconds: int =
 
 
 def cancel_run(studio: Studio, *, run_id: str) -> dict[str, Any]:
+    if run_id.startswith(ADDON_RUN_PREFIX):
+        try:
+            studio.post(f"api/addons/jobs/{run_id[len(ADDON_RUN_PREFIX):]}/cancel")
+            return {"cancelled": True, "note": None}
+        except StudioError:
+            return {"cancelled": False,
+                    "note": "It was not running (already finished, failed or cancelled)."}
     result = studio.post(f"api/chains/{run_id}/cancel")
     return {"cancelled": bool(result.get("cancelled")),
             "note": None if result.get("cancelled") else "It was not running (already finished, failed or cancelled)."}
@@ -993,6 +1044,20 @@ def show_in_folder(studio: Studio, *, asset_id: str, stage: str = "latest") -> d
     return studio.post_json("api/reveal", {"file": file})
 
 
+def export_roblox(studio: Studio, *, asset_id: str, stage: str = "latest", kind: str | None = None,
+                  height_studs: float | None = None) -> dict[str, Any]:
+    file = studio.get("api/model-info", asset=asset_id, stage=stage)["file"]
+    body: dict[str, Any] = {"file": file}
+    if kind:
+        body["kind"] = kind
+    if height_studs is not None:
+        body["height_studs"] = height_studs
+    made = studio.post_json("api/roblox-export", body)
+    return made | {"tip": "Tell the user each check line as written. In Roblox Studio: Import 3D, pick "
+                          "model.glb, leave Scale Unit on Studs. HOW-TO-IMPORT.txt in the folder has the steps. "
+                          "Too many triangles is reported here, not fixed."}
+
+
 def report_bug(studio: Studio, *, message: str, include_prompt: bool = False) -> dict[str, Any]:
     params = {"prompt": "1"} if include_prompt else {}
     details = studio.get("api/bug-report", **params)["details"]
@@ -1032,6 +1097,33 @@ def install_backend(studio: Studio, *, backend_id: str, confirm: bool = False) -
     return {"started": True, **{k: v for k, v in plan.items() if v not in (None, [])},
             "progress": "list_engines shows it as ready when done; the studio's Setup page shows progress.",
             "status_url": started.get("status_url")}
+
+
+# --------------------------------------------------------------------------- add-ons
+def list_addons(studio: Studio) -> dict[str, Any]:
+    """Every add-on on the list, whether it is installed, its label (Verified, Listed or Unknown), author and what it makes."""
+    return studio.get("api/addons")
+
+
+def install_addon(studio: Studio, *, addon_id: str, confirm: bool = False) -> dict[str, Any]:
+    """Install an add-on. Without confirm this returns the plan; confirm=true installs it.
+
+    Add-ons run code on this machine, so always show the plan and get a clear yes first.
+    """
+    plan = studio.post_json(f"api/addons/{addon_id}/install", {"confirm": False})
+    if not confirm:
+        plan["to_start"] = (
+            "Nothing has been installed. Tell the user what this add-on does, who wrote it, "
+            "its licence, its label (Verified, Listed or Unknown, and for a Listed one whether we test-ran it) and whether it runs on their machine or in the cloud, then call again with confirm=true only after they say yes."
+        )
+        return plan
+    return studio.post_json(f"api/addons/{addon_id}/install", {"confirm": True})
+
+
+def run_addon(studio: Studio, *, addon_id: str, tool: str, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run one tool from an installed add-on. Returns a run_id; poll run_status for progress."""
+    result = studio.post_json(f"api/addons/{addon_id}/run/{tool}", {"inputs": inputs or {}})
+    return {"run_id": ADDON_RUN_PREFIX + str(result.get("job_id")), "status": result.get("status")}
 
 
 # --------------------------------------------------------------------------- the server
@@ -1164,6 +1256,10 @@ version of a character. Skins: make_skin(asset_id, change="make the skirt gold")
 finished Pixal3D model's own pictures; show each to the user (skin_picture) and approve or redo, front
 then back; build_skin then repaints the same model (same mesh, so the rig and moves still fit).
 Never download model weights without the user's explicit yes (install_backend asks first).
+Add-ons are extra tools from other repos, listed by list_addons and installed with install_addon. They run code
+on this machine, so show the user the plan (author, licence, its label, what it fetches) and get a clear yes before
+confirm=true. Run a tool from an installed add-on with run_addon; it returns a run_id like create does, then
+poll run_status until it finishes.
 If status shows usage_counts.ask_user, put that question to the user; if they say yes, record it with
 usage_counts(user_said_yes=true). Never answer it for them. Only the user can turn sharing on or off, on the
 studio's About page.
@@ -1412,6 +1508,17 @@ def build_server(studio: Studio | None = None):
         who wants the file itself. stage: latest | picture | model | finished | rigged."""
         return safe(lambda: show_in_folder(studio, asset_id=asset_id, stage=stage))
 
+    @server.tool(name="export_roblox", structured_output=False)
+    def tool_export_roblox(asset_id: str, stage: str = "latest", kind: str | None = None,
+                           height_studs: float | None = None):
+        """Make a copy Roblox Studio can import: right size in studs, PNG pictures, the four surface pictures
+        loose, and a check against Roblox's limits (20,000 triangles per mesh; a wearable item 4,000).
+        kind: prop | character | accessory (a wearable item); left out, a rigged model is a character
+        and anything else a prop. Characters come in standing still. height_studs: how tall; rigged models keep their person size,
+        others default to 4 (a Roblox character is about 5-6). stage: latest | model | finished | rigged."""
+        return safe(lambda: export_roblox(studio, asset_id=asset_id, stage=stage, kind=kind,
+                                          height_studs=height_studs))
+
     @server.tool(name="report_bug", structured_output=False)
     def tool_report_bug(message: str, include_prompt: bool = False):
         """Draft a bug report for the AssetFurnace team: the user's words plus the version, machine and the
@@ -1431,6 +1538,27 @@ def build_server(studio: Studio | None = None):
         """Set up an engine. Without confirm it only reports what would be downloaded, the size and the
         licence; tell the user and get a clear yes before calling again with confirm=true."""
         return safe(lambda: install_backend(studio, backend_id=backend_id, confirm=confirm))
+
+    @server.tool(name="list_addons", structured_output=False)
+    def tool_list_addons():
+        """Every add-on from the list (installed first): name, author, summary, links, rating,
+        its label (Verified, Listed or Unknown; a Listed one with run_checked false is
+        "not run-checked": we did not test-run it; one with run_skipped filled in was only partly
+        run-checked: those tools need a file and were not run), whether it runs on this machine or in the cloud,
+        a picture link of what it makes, and the tools it provides."""
+        return safe(lambda: list_addons(studio))
+
+    @server.tool(name="install_addon", structured_output=False)
+    def tool_install_addon(addon_id: str, confirm: bool = False):
+        """Install an add-on. Without confirm it returns the plan; tell the user what it fetches,
+        who wrote it and its licence, then call again with confirm=true only after they say yes."""
+        return safe(lambda: install_addon(studio, addon_id=addon_id, confirm=confirm))
+
+    @server.tool(name="run_addon", structured_output=False)
+    def tool_run_addon(addon_id: str, tool: str, inputs: dict | None = None):
+        """Run one tool from an installed add-on. tool is the tool id shown by list_addons.
+        Returns a run_id; poll run_status until it is done, error or cancelled."""
+        return safe(lambda: run_addon(studio, addon_id=addon_id, tool=tool, inputs=inputs or {}))
 
     return server
 

@@ -40,6 +40,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hero route: `--head-steps N` sets the sampling steps for the head's own build. It used the engine's fast
   setting (8), which is tuned for whole models; a face gains from more.
 
+## [0.6.0] - 2026-11-18
+
+### Added
+- **Add-ons: "Partly run-checked"**: when only some of an add-on's tools could be test-run (the others need a picture or
+  model file), the studio, command line, install plan and agent tools say so and name the tools that were not run.
+- **Add-ons: "Not run-checked"**: a Listed add-on we could not test-run on a clean machine now says so in the studio, the
+  command line, the install plan and the agent tools; one that passed the test run says "and a test run".
+- **Add-ons (core + CLI)**: install and run someone else's repo with an `addon.json` via
+  `./lab addon list|add|remove|run`. Listed add-ons are pinned to an exact commit, verified
+  on clone, and run with `HF_HUB_OFFLINE=1`. The core writes the `.provenance.json` sidecar.
+- **Add-ons studio UI**: a dedicated Add-ons page linked from Setup lists reviewed add-ons
+  (installed first) with author, summary, links, star rating, Install/Remove and inline tool
+  cards. The Library labels models "made with <add-on>" from their provenance sidecar.
+- **Add-ons for agents**: `list_addons`, `install_addon` and `run_addon` MCP tools call the
+  same studio API as the UI; `install_addon` asks before installing, and `run_addon` returns
+  a run id to poll with `run_status`.
+- **Add-on pictures**: an add-on's card in the studio shows a picture of what it makes, and `list_addons` gives agents the link.
+- **`--unlisted`**: the way to install an add-on that is not on the list (it is marked Unknown). `--unreviewed` still works.
+- **Verified, Listed or Unknown**: every add-on now carries one of three labels, the same words in the studio, the command line, the agent tools and the install plan, and in the licence record of what it makes. The old yes/no "reviewed" flag is gone.
+- **Cloud or on this machine**: every add-on says whether it runs on your machine or uses the cloud. The studio shows a badge, and the install plan says plainly when your models would be sent off this machine.
+- **Add-ons author guide** at `docs/add-ons.md`: how to write an `addon.json`, what v1
+  add-ons can do, how to test locally, and the rules for being listed.
+
+### Fixed
+- **Add-ons on Linux**: an add-on whose run command names its script by a bare file name (`-P crate.py`) now finds it, so the list's test run can run it.
+- **Add-ons docs**: "Getting listed" now describes the submit page, not a pull request on the list repo (those are closed).
+- Installing an unreviewed add-on no longer fails when its repo name differs from its id.
+- An add-on you installed without review is no longer shown as reviewed just because a listed add-on has the same name.
+- A model made by an add-on now keeps the licence of the model that went into it, including restrictions such as "not licensed in the EU, UK or South Korea". A model with no licence record counts as unverified. The record also holds a fingerprint of the result file.
+- Prop finishing writes file paths with forward slashes on every system, so its manifest reads the same on Windows.
+
+## [0.5.11] - 2026-11-17
+
+### Added
+- **Export for Roblox**: a button under a model's stats (and `export_roblox` for agents, and
+  `scripts/export_roblox.py`) makes a copy Roblox Studio imports at the right size, with PNG
+  pictures and the four surface pictures loose for a SurfaceAppearance. It checks the model
+  against Roblox's limits (20,000 triangles per mesh, 4,000 for a wearable item) and says
+  plainly what won't fit. Rigged characters keep their skeleton but stand still: Studio
+  plays our moves wrongly, so they are left out for now.
+- Rig: a **Bone names** choice. **Unity Humanoid** gives the body bones Unity's names (Hips,
+  Spine, ... LeftToes) and keeps at most four weights a vertex, so Unity maps the avatar on its
+  own; hair, capes and gear keep their names under the nearest body bone. Also for agents
+  (`advanced={"bone_names": "unity"}`), and `scripts/name_bones.py` does it for a model rigged
+  before. The names live in `image_to_3dlab/bone_names.py`, one table per engine (#237).
+
+### Fixed
+- The Windows installer's anonymous started / stopped / finished count reaches the site.
+  Its message was split apart on the way to curl, so the site turned every one away.
+- Stable Fast 3D's setup says its real size (about 5.5 GB with the CLIP model), and on AMD a
+  Hugging Face refusal says to sign in and accept the terms, not just that setup stopped.
+- Stable Fast 3D models are marked as facing front, so a prop sheet made with it splits in
+  the right order.
+- Choosing Unity bone names can no longer turn a finished rig into a failed one.
+- A rig asked for Unity bone names whose skeleton is not a humanoid keeps its numbered names,
+  and its record now says so (and why) instead of claiming Unity names.
+- Rig runs on RTX 40 cards again. The new card check refused them, because the torch we
+  install carries code for sm_86 and sm_90 but not sm_89; code for an earlier card of the
+  same family runs on a later one, so it now counts.
+- Picking an option in Create no longer leaves an error in the browser console, and the panel
+  puts its scroll position back itself instead of relying on the browser to keep it.
+- Dropping the surface maps for a phone now makes the file smaller, as promised. The colour
+  picture came out with an unused see-through layer, which kept it as a large PNG: a light
+  chest was 1.7 MB with them dropped against 1.5 MB with them kept.
+- Setting up Stable Fast 3D or TRELLIS.2 says what actually stopped it. A Mac without libomp
+  was told to sign in to Hugging Face, because those setups mention that their model is gated
+  before they begin; it now shows the line that says to install libomp.
+- Hunyuan3D-MLX (Xiong) builds models again from Create. The run stopped at once and showed
+  "Working…" for good, with Cancel unable to stop it. A run that cannot start now says why.
+- Wave, Jog, Jab, Sit down, Fighting stance, Punch combo, Strafe left and the "take B" moves
+  show in the Library again. They were made and saved, then hidden as spare takes of
+  another move, so a character looked as if the move had never been added.
+- Stable Fast 3D models face the front, like every other engine's. They came out turned the
+  other way round: a prop showed its back as its front in the studio, and in a game engine
+  each SF3D file faced away from the ones Pixal3D and Hunyuan made.
+- Stable Fast 3D makes models on a Mac again. Setup now also fetches the CLIP model SF3D uses
+  to guess materials (605 MB, MIT), which it showed as ready without and then failed on its
+  first run; and its texture baker no longer crashes under current PyTorch
+  (`scripts/patch_sf3d_mps_queue.py`, applied by setup, which rebuilds an older install).
+
 ## [0.5.10] - 2026-11-13
 
 ### Added

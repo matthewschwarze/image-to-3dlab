@@ -210,7 +210,7 @@ export function openCreate({ stage, recipes, engines, presets, frontBack = null,
       <p class="error" data-error hidden></p>
       <div class="row end"><span class="hint">${active.length} step${active.length === 1 ? '' : 's'}${active.includes('picture') ? ` · the picture uses ${esc(picEngine()?.label || 'the picture engine')}, run on this machine` : ''}</span><button type="submit" class="primary">Make it</button></div>
     </form>`;
-    wire(active);
+    wire(active, scrollTop);
   };
 
   const sourceDropContent = () => state.file
@@ -244,7 +244,8 @@ export function openCreate({ stage, recipes, engines, presets, frontBack = null,
     render();
   };
 
-  function wire(active) {
+  // scrollTop is where render found the sheet, put back once the new contents are wired
+  function wire(active, scrollTop) {
     const q = (sel) => sheet.querySelector(sel);
     q('[data-close]').onclick = close;
     sheet.querySelectorAll('[data-have]').forEach((b) => b.onclick = () => { state.have = b.dataset.have; setFile(null); state.stop = null; render(); });
@@ -427,6 +428,7 @@ export function planForm(plan, made = {}) {
   if (plan.keepEverything) form.append('keep_everything', '1');
   if (plan.finishSettings) form.append('finish_settings', JSON.stringify(plan.finishSettings));
   if (plan.moveSettings) form.append('move_settings', JSON.stringify(plan.moveSettings));
+  if (plan.rigSettings) form.append('rig_settings', JSON.stringify(plan.rigSettings));
   if (plan.backSettings) form.append('back_settings', JSON.stringify(plan.backSettings));
   form.append('made', JSON.stringify(made));
   if (plan.file) form.append('file', plan.file);

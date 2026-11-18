@@ -17,6 +17,7 @@
   <button class="ghost tip-left" id="guideBtn" data-tip="A short walk through the studio: what each part does.">How to use</button>
   <button class="ghost tip-left news-btn" id="newsBtn" data-tip="News from us: new versions, AssetFurnace Cloud, known problems and fixes.">News <span class="news-count" hidden></span></button>
   <button class="ghost tip-left" id="activityBtn" data-tip="Everything that has run here: finished, stopped or failed, with logs.">Activity</button>
+  <button class="ghost tip-left" id="addonsBtn" data-tip="Run a tool from an installed add-on.">Add-ons</button>
   <button class="ghost report-btn tip-left" id="reportBtn" data-tip="Something broke? Tell us. You see the whole report before anything is sent.">Report a bug</button>
   <button class="ghost tip-left" id="aboutBtn" data-tip="What AssetFurnace is, the models it builds on, and where to find us.">About</button>
   <a class="ghost tip-left" href="./setup.html" data-tip="What's installed, how much disk it uses, and what you can add.">Setup</a>
@@ -69,7 +70,9 @@
         <div class="file-actions" id="fileActions">
           <button class="ghost small" id="revealBtn" data-tip="Open the folder this file is in, with the file selected." hidden>Show in folder</button>
           <button class="ghost small" id="copyPathBtn" data-tip="Copy the file's full path on this computer.">Copy path</button>
+          <button class="ghost small" id="robloxBtn" data-tip="Makes a copy Roblox Studio can import: right size, right pictures. Warns if it's too detailed for Roblox.">Export for Roblox</button>
         </div>
+        <ul class="roblox-result" id="robloxResult" aria-live="polite" hidden></ul>
       </section>
       <a class="primary export" id="download" data-tip="Download this model as a GLB for Godot, Unity, Unreal, Blender or three.js." hidden download>Download GLB</a></div>
   </aside>

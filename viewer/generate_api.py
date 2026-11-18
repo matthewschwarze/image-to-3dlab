@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 # Sibling import must also work when tests load this file directly via importlib.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import activity_api
+import addons_api
 import backend_catalog
 import bug_report_api
 import fixspot_api
@@ -55,6 +56,7 @@ from assets_api import set_name as set_asset_name
 from assets_api import thumbnail as asset_thumbnail
 from autorig_api import (
     ANIMATE_JOBS,
+    bone_names_choice,
 )
 from autorig_api import (
     aliases as animate_aliases,
@@ -1435,7 +1437,8 @@ def _rss_monitor(job: Job) -> None:
 
 def _read_process(job: Job) -> None:
     assert job.process is not None and job.process.stdout is not None
-    spec = BACKENDS[job.backend_id]
+    spec = backend_spec(job.backend_id)
+    assert spec is not None, "_run_job resolves the backend before it starts this reader"
     buffer = ""
     while True:
         chunk = job.process.stdout.read(4096)
@@ -1694,12 +1697,15 @@ def failure_reason(log_lines, limit: int = 6) -> str | None:
 
 
 def _run_job(job: Job) -> None:
-    spec = BACKENDS[job.backend_id]
-    args = [str(spec.interpreter), str(spec.wrapper), *spec.build_args(job)]
-    env = generate_child_env(job.backend_id)
-    if job.backend_id == "trellis" and spec.wrapper == WRAPPER:
-        env.update(attention_backend_spec(job.settings["sparse_attn_backend"])[1])
     try:
+        # Inside the try: a failure here must still end the job, or it stays "running" for good.
+        spec = backend_spec(job.backend_id)
+        if spec is None:
+            raise RuntimeError(f"unknown backend {job.backend_id!r}")
+        args = [str(spec.interpreter), str(spec.wrapper), *spec.build_args(job)]
+        env = generate_child_env(spec.id)
+        if spec.id == "trellis" and spec.wrapper == WRAPPER:
+            env.update(attention_backend_spec(job.settings["sparse_attn_backend"])[1])
         job.status = "running"
         job.emit({"phase": "load", "overall_pct": 0, "message": f"Starting {spec.label} job"})
         job.process = subprocess.Popen(
@@ -1893,7 +1899,7 @@ def _sf3d_readiness(host: str | None = None) -> dict[str, Any]:
     if (host or host_platform()) == AMD:
         present = SF3D_ROCM_MARKER.is_file() and SF3D_ROCM_PYTHON.is_file()
         # The weights too: a code-only install (or one stopped by the gated licence) would
-        # otherwise start a run, and SF3D would fetch ~4.9 GB that nobody agreed to.
+        # otherwise start a run, and SF3D would fetch ~5.5 GB that nobody agreed to.
         rows = _sf3d_weights()
         weights = {w["label"]: {"label": w["label"], "present": not weight_blocks_generate(w),
                                 "human": w.get("human_present", "")} for w in rows}
@@ -1901,7 +1907,7 @@ def _sf3d_readiness(host: str | None = None) -> dict[str, Any]:
         hint = None
         if not present:
             hint = ("Stable Fast 3D for AMD is not installed. Run "
-                    "scripts/bootstrap_sf3d_rocm.py (Linux with ROCm, ~4.9 GB of weights).")
+                    "scripts/bootstrap_sf3d_rocm.py (Linux with ROCm, ~5.5 GB of weights).")
         elif missing:
             hint = ("Stable Fast 3D weights are missing: " + "; ".join(missing) + ". Press "
                     "Download on its Setup card, or run python scripts/bootstrap_sf3d_rocm.py "
@@ -3002,6 +3008,21 @@ class Handler(SimpleHTTPRequestHandler):
         if parts == ["api", "reveal"]:
             self._reveal()
             return
+        if parts == ["api", "roblox-export"]:
+            self._roblox_export()
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "addons"] and parts[3] == "install":
+            self._addon_install(parts[2])
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "addons"] and parts[3] == "remove":
+            self._addon_remove(parts[2])
+            return
+        if len(parts) == 5 and parts[:2] == ["api", "addons"] and parts[3] == "run":
+            self._addon_run(parts[2], parts[4])
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "addons", "jobs"] and parts[4] == "cancel":
+            self._addon_cancel(parts[3])
+            return
         if parts == ["api", "bug-report"]:
             self._bug_report_links()
             return
@@ -3503,6 +3524,15 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # a broken run folder must not take the whole Library down
                 self._send_json(500, {"error": str(exc)})
             return
+        if parts == ["api", "addons"]:
+            self._send_json(200, addons_api.addons_payload())
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "addons", "jobs"] and parts[4] == "status":
+            self._addon_job_status(parts[3])
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "addons", "jobs"] and parts[4] == "events":
+            self._addon_job_events(parts[3])
+            return
         if parts == ["api", "update-check"]:
             self._send_json(200, update_check())
             return
@@ -3920,7 +3950,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json(422, {"error": "send a .glb in 'asset' or a listed 'model'"})
                 return
             try:
-                job = ANIMATE_JOBS.create_rig(name, data, record, origin)
+                job = ANIMATE_JOBS.create_rig(name, data, record, origin,
+                                              bone_names=bone_names_choice(form))
+            except ValueError as exc:
+                self._send_json(422, {"error": str(exc)})
+                return
             except RuntimeError as exc:
                 self._send_json(409, {"error": str(exc)})
                 return
@@ -4372,6 +4406,111 @@ class Handler(SimpleHTTPRequestHandler):
             self._send_json(422, {"error": "share must be true or false"})
             return
         self._send_json(200, usage_api.set_sharing(body["share"]))
+
+    def _roblox_export(self) -> None:
+        """`{file, kind?, height_studs?}`: write the Roblox-ready copy beside an output file."""
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            # it writes files: a page elsewhere can send a plain form, but not JSON without asking
+            self._send_json(415, {"error": "send JSON"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 4096 else {}
+            if not isinstance(body, dict):
+                raise ValueError("send a JSON object")
+            height = body.get("height_studs")
+            made = model_info_api.roblox_export(
+                OUTPUT_ROOT, str(body.get("file", "")), kind=body.get("kind") or None,
+                height_studs=float(height) if height not in (None, "") else None)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            self._send_json(422, {"error": str(exc)})
+            return
+        self._send_json(200, made)
+
+    def _read_json_body(self, limit: int = 4096) -> dict[str, Any] | None:
+        """Read a JSON POST body or send an error and return None."""
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            self._send_json(415, {"error": "send JSON"})
+            return None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= limit else {}
+            if not isinstance(body, dict):
+                raise ValueError("send a JSON object")
+            return body
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._send_json(422, {"error": str(exc)})
+            return None
+
+    def _addon_install(self, addon_id: str) -> None:
+        body = self._read_json_body()
+        if body is None:
+            return
+        try:
+            if body.get("confirm"):
+                payload = addons_api.apply_install(addon_id)
+            else:
+                payload = addons_api.install_payload(addon_id)
+        except ValueError as exc:
+            self._send_json(422, {"error": str(exc)})
+            return
+        except RuntimeError as exc:
+            self._send_json(500, {"error": str(exc)})
+            return
+        self._send_json(200, payload)
+
+    def _addon_remove(self, addon_id: str) -> None:
+        try:
+            payload = addons_api.apply_remove(addon_id)
+        except ValueError as exc:
+            self._send_json(422, {"error": str(exc)})
+            return
+        self._send_json(200, payload)
+
+    def _addon_run(self, addon_id: str, tool_id: str) -> None:
+        body = self._read_json_body()
+        if body is None:
+            return
+        inputs = body.get("inputs") or {}
+        if not isinstance(inputs, dict):
+            self._send_json(422, {"error": "inputs must be an object"})
+            return
+        try:
+            payload = addons_api.run_payload(addon_id, tool_id, inputs)
+        except ValueError as exc:
+            self._send_json(422, {"error": str(exc)})
+            return
+        except RuntimeError as exc:
+            self._send_json(409, {"error": str(exc)})
+            return
+        self._send_json(200, payload)
+
+    def _addon_cancel(self, job_id: str) -> None:
+        try:
+            addons_api.ADDON_JOBS.cancel(job_id)
+        except ValueError as exc:
+            self._send_json(422, {"error": str(exc)})
+            return
+        self._send_json(200, {"cancelled": True})
+
+    def _addon_job_status(self, job_id: str) -> None:
+        job = addons_api.ADDON_JOBS.get(job_id)
+        if job is None:
+            self._send_json(404, {"error": "unknown job"})
+            return
+        self._send_json(200, addons_api.status_payload(job))
+
+    def _addon_job_events(self, job_id: str) -> None:
+        job = addons_api.ADDON_JOBS.get(job_id)
+        if job is None:
+            self._send_json(404, {"error": "unknown job"})
+            return
+        # Simple long-poll: wait up to 25 seconds for a new event.
+        last_index = int(parse_qs(urlparse(self.path).query).get("last", ["-1"])[0])
+        with job.condition:
+            while len(job.events) <= last_index and job.status not in {"done", "error", "cancelled"}:
+                job.condition.wait(timeout=25)
+        self._send_json(200, {"events": job.events[last_index + 1:], "status": job.status})
 
     def _reveal(self) -> None:
         """Show one output file in Finder / Explorer / the file manager, on this machine."""

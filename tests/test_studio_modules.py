@@ -19,7 +19,7 @@ def _run(module: str, body: str):
     url = (REPO / "viewer" / "studio" / module).as_uri()
     program = f"import * as m from {json.dumps(url)};\n{body}"
     result = subprocess.run([NODE, "--input-type=module", "--eval", program],
-                            check=True, capture_output=True, text=True)
+                            check=True, capture_output=True, text=True, encoding="utf-8")
     return json.loads(result.stdout)
 
 
@@ -392,6 +392,106 @@ def test_the_how_to_page_covers_every_button_in_the_top_bar():
         assert must in out, must
 
 
+@needs_node
+def test_addons_page_escapes_html_and_builds_author_line():
+    out = _run("addons_page.js", """
+      const addon = {
+        tier: "verified",
+        author: { name: "A & B <script>", url: "https://example.test" },
+        links: { repo: "https://repo.test", site: "https://site.test" }
+      };
+      console.log(JSON.stringify([m.escapeHtml('<b>'), m.authorLine(addon), m.tierBadge(addon), m.ratingLine(addon)]));
+    """)
+    assert out[0] == "&lt;b&gt;"
+    assert "A &amp; B &lt;script&gt;" in out[1]
+    assert "https://repo.test" in out[1]
+    assert "https://site.test" in out[1]
+    assert "Verified" in out[2]
+    assert out[3] == ""
+
+
+@needs_node
+def test_addons_page_shows_rating_and_the_three_labels():
+    out = _run("addons_page.js", """
+      console.log(JSON.stringify([
+        m.ratingLine({ rating: 4.5, ratings_count: 12 }),
+        m.tierBadge({ tier: "listed" }),
+        m.tierBadge({ tier: "unknown" }),
+        m.tierBadge({ no_longer_listed: true }),
+      ]));
+    """)
+    assert "4.5" in out[0] and "(12)" in out[0]
+    assert "Listed" in out[1] and "No longer" not in out[1]
+    assert "Unknown" in out[2]
+    assert "No longer listed" in out[3]
+
+
+@needs_node
+def test_addons_page_says_not_run_checked_only_for_a_listed_add_on_we_did_not_run():
+    out = _run("addons_page.js", """
+      console.log(JSON.stringify([
+        m.tierBadge({ tier: "listed", run_checked: false }),
+        m.tierBadge({ tier: "listed", run_checked: true }),
+        m.tierBadge({ tier: "listed" }),
+        m.tierBadge({ tier: "verified", run_checked: false }),
+      ]));
+    """)
+    assert "Not run-checked" in out[0]
+    assert "Not run-checked" not in out[1] and "Not run-checked" not in out[2] and "Not run-checked" not in out[3]
+
+
+@needs_node
+def test_addons_page_names_the_tools_a_partial_test_run_left_out():
+    out = _run("addons_page.js", """
+      console.log(JSON.stringify([
+        m.tierBadge({ tier: "listed", run_checked: true, run_skipped: ["fit", "la<b>el"] }),
+        m.tierBadge({ tier: "listed", run_checked: true, run_skipped: [] }),
+      ]));
+    """)
+    assert "Partly run-checked" in out[0] and "fit, label" in out[0] and "<b>" not in out[0]
+    assert "run-checked" not in out[1]
+
+
+@needs_node
+def test_addons_page_badge_says_cloud_or_on_this_machine():
+    out = _run("addons_page.js", """
+      console.log(JSON.stringify([m.runsBadge({ runs: "cloud" }), m.runsBadge({ runs: "local" }), m.runsBadge({})]));
+    """)
+    assert "Cloud" in out[0]
+    assert "On this machine" in out[1]
+    assert "On this machine" in out[2]
+
+
+@needs_node
+def test_addons_page_shows_a_picture_only_for_a_plain_https_link():
+    out = _run("addons_page.js", """
+      console.log(JSON.stringify([
+        m.pictureHtml({ name: "A & B", picture: "https://example.test/a.jpg" }),
+        m.pictureHtml({ name: "X", picture: "javascript:alert(1)" }),
+        m.pictureHtml({ name: "X" }),
+      ]));
+    """)
+    assert 'src="https://example.test/a.jpg"' in out[0]
+    assert "A &amp; B" in out[0]
+    assert out[1] == "" and out[2] == ""
+
+
+@needs_node
+def test_addons_page_builds_input_controls():
+    out = _run("addons_page.js", """
+      console.log(JSON.stringify([
+        m.inputControl({ id: "x", type: "text", label: "Name" }),
+        m.inputControl({ id: "y", type: "number", label: "Count", min: 1, max: 10 }),
+        m.inputControl({ id: "z", type: "choice", label: "Kind", choices: ["a", "b"] }),
+        m.inputControl({ id: "w", type: "toggle", label: "On" }),
+      ]));
+    """)
+    assert 'type="text"' in out[0] and 'data-input="x"' in out[0]
+    assert 'min="1"' in out[1] and 'max="10"' in out[1]
+    assert '<option value="a">a</option>' in out[2] and '<option value="b">b</option>' in out[2]
+    assert 'type="checkbox"' in out[3]
+
+
 def test_the_classic_viewer_is_gone_and_old_links_land_in_the_studio():
     viewer = REPO / "viewer"
     assert not (viewer / "app.js").exists() and not (viewer / "modes").exists()
@@ -597,7 +697,7 @@ def test_the_starting_camera_looks_at_the_middle_of_a_model_on_the_floor():
       const m = await import({json.dumps(url)});
       const h = m.homeView(2);
       console.log(JSON.stringify(h));"""
-    result = subprocess.run([NODE, "--input-type=module", "--eval", program], check=True, capture_output=True, text=True)
+    result = subprocess.run([NODE, "--input-type=module", "--eval", program], check=True, capture_output=True, text=True, encoding="utf-8")
     out = json.loads(result.stdout)
     assert out["target"] == [0, 1, 0]
     assert out["position"] == [1.45, 1.35, 2.45]
@@ -665,7 +765,7 @@ def test_a_character_is_turned_to_face_the_camera_whichever_way_its_feet_point()
       }});
       console.log(JSON.stringify({{ turned, none: m.facingAngle(null) }}));"""
     out = json.loads(subprocess.run([NODE, "--input-type=module", "--eval", program], check=True,
-                                    capture_output=True, text=True).stdout)
+                                    capture_output=True, text=True, encoding="utf-8").stdout)
     assert out["none"] == 0
     for x, z in out["turned"]:
         assert abs(x) < 0.01 and z > 0.99  # everyone ends up facing +Z, the camera
@@ -794,7 +894,7 @@ def test_create_picture_toggle_preserves_each_advanced_section_open_state():
         closest(selector) { return selector === 'details' && this.parentNode?.tagName === 'DETAILS' ? this.parentNode : null; }
         querySelectorAll(selector) { const found = []; const visit = (n) => { for (const c of n.children) { if (matches(c, selector)) found.push(c); visit(c); } }; visit(this); return found; }
         querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
-        set innerHTML(html) { this.children = []; parse(this, html); }
+        set innerHTML(html) { this.children = []; this.scrollTop = 0; parse(this, html); }   // a rebuild loses the scroll
       }
       const matches = (n, selector) => {
         if (selector === 'form' || selector === 'textarea' || selector === 'select') return n.tagName.toLowerCase() === selector;
@@ -815,7 +915,7 @@ def test_create_picture_toggle_preserves_each_advanced_section_open_state():
       };
       globalThis.document = { createElement: () => new Node(), addEventListener() {}, removeEventListener() {} };
       globalThis.ResizeObserver = undefined; globalThis.URL = { createObjectURL: () => 'blob:test', revokeObjectURL() {} };
-      globalThis.scrollTop = 0;
+      // no global scrollTop here: a browser has none, and one hid a ReferenceError on every rerender
       const stage = new Node();
       const handle = m.openCreate({ stage, recipes: { goals: { character: {} }, trouble: [] }, engines: [{ id: 'pixal3d', label: 'Pixal3D' }], presets: [], pictureEngines: [], onStart() {} });
       const sheet = stage.children[0]; const picture = () => sheet.querySelector('[data-detail="picture"]');
@@ -826,17 +926,20 @@ def test_create_picture_toggle_preserves_each_advanced_section_open_state():
       const closed = model().open; const pictureWhileModelClosed = picture().open;
       model().open = true; toggle();
       const reopened = model().open;
+      sheet.scrollTop = 120;
       sheet.querySelector('[data-have="picture"]').onclick();
+      const scrollKept = sheet.scrollTop;
       const pendingSource = handle.sourceRevision();
       const used = await handle.usePicture({ name: 'library source.png', type: 'image/png', size: 1 });
       console.log(JSON.stringify({ hasPicture: Boolean(picture()), hasModel: Boolean(model()), closed,
         pictureWhileModelClosed, reopened, source: handle.pictureName(), used,
         pendingSourceStillCurrent: handle.isSourceCurrent(pendingSource), sourceDropPreserved: sourceDrop === sheet.querySelector('[data-drop]'),
-        modelPreserved: model() === sheet.querySelector('[data-detail="model"]') }));
+        modelPreserved: model() === sheet.querySelector('[data-detail="model"]'), scrollKept }));
     """)
     assert out == {"hasPicture": False, "hasModel": True, "closed": False, "pictureWhileModelClosed": True,
                    "reopened": True, "source": "library source.png", "used": True,
-                   "pendingSourceStillCurrent": False, "sourceDropPreserved": True, "modelPreserved": True}
+                   "pendingSourceStillCurrent": False, "sourceDropPreserved": True, "modelPreserved": True,
+                   "scrollKept": 120}
 
 
 @needs_node
@@ -1702,7 +1805,7 @@ def test_the_setup_question_lists_what_comes_down_beyond_the_weights():
       m.alsoFetchesLines({ also_fetches: [{ what: 'sd engine', size: '~35 MB', licence: 'MIT', from: 'https://g' }] }),
       m.alsoFetchesLines({})]));"""
     lines, none = json.loads(subprocess.run([NODE, "--input-type=module", "--eval", program], check=True,
-                                            capture_output=True, text=True).stdout)
+                                            capture_output=True, text=True, encoding="utf-8").stdout)
     assert "Also downloads:" in lines and any("sd engine: ~35 MB, MIT" in x and "https://g" in x for x in lines)
     assert none == []
 
@@ -1849,3 +1952,48 @@ def test_readme_and_both_installers_say_the_same_sentence():
         flat = " ".join(text.replace("**", "").replace('say "', "").replace('Say "', "")
                         .replace('"', "").split())
         assert plain in flat, path
+
+
+@needs_node
+def test_roblox_lines_put_the_size_first_then_the_worst_check():
+    out = _run("library.js", """console.log(JSON.stringify({
+        made: m.robloxLines({size_studs: [3.571, 6.404, 1.2], checks: [
+          {level: 'pass', text: 'ok'}, {level: 'note', text: 'still'}, {level: 'warn', text: 'careful'},
+          {level: 'fail', text: 'no'}]}),
+        sizeless: m.robloxLines({size_studs: null, checks: [{level: 'pass', text: 'ok'}]}),
+        none: m.robloxLines(null),
+        saved: m.robloxLines({size_studs: null, checks: [], folder: 'run/chest_roblox'}),
+      }));""")
+    assert out["made"] == [{"level": "info", "text": "6.4 studs tall"},
+                           {"level": "fail", "text": "no"}, {"level": "warn", "text": "careful"},
+                           {"level": "note", "text": "still"}, {"level": "pass", "text": "ok"}]
+    assert out["sizeless"] == [{"level": "pass", "text": "ok"}]
+    assert out["none"] == []
+    assert out["saved"] == [{"level": "info", "text": "Saved next to the model, in chest_roblox"}]
+    assert out["saved"] == [{"level": "info", "text": "Saved next to the model, in chest_roblox"}]
+
+
+@needs_node
+def test_the_rig_card_offers_unity_bone_names_and_the_plan_carries_the_choice():
+    out = _run("steps.js", f"""
+      const knight = {json.dumps({**KNIGHT, "rigged": None, "stage": "finished", "clips": []})};
+      const s = {{ rigSource: 'finished' }};
+      console.log(JSON.stringify({{
+        unity: m.chainPlan('rigged', knight, {{ ...s, boneNames: 'unity' }}),
+        numbered: m.chainPlan('rigged', knight, {{ ...s, boneNames: 'numbered' }}) }}));""")
+    assert out["unity"]["rigSettings"] == {"bone_names": "unity"}
+    assert "rigSettings" not in out["numbered"]
+
+
+@needs_node
+def test_a_plan_s_rig_settings_travel_to_the_server():
+    out = _run("create.js", """
+      const form = m.planForm({ description: 'k', steps: ['rigged'], rigSettings: { bone_names: 'unity' } },
+        { finished: 'finish/k/k_8k.glb' });
+      console.log(JSON.stringify(Object.fromEntries([...form.entries()])));""")
+    assert json.loads(out["rig_settings"]) == {"bone_names": "unity"}
+
+
+def test_the_rig_card_has_a_bone_names_choice():
+    source = (REPO / "viewer" / "studio" / "steps.js").read_text(encoding="utf-8")
+    assert 'data-k="bonenames"' in source and '<option value="unity">Unity Humanoid</option>' in source

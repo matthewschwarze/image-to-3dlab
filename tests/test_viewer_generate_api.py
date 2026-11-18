@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
 import importlib.util
 import json
 import os
@@ -1022,6 +1023,7 @@ def test_a_prop_bake_waits_for_a_running_rig_rebind(tmp_path, monkeypatch):
     assert api.Handler._props_busy(None) is None
 
 
+@pytest.mark.posix
 def test_terminate_active_job_stops_picture_animate_skin_and_download(tmp_path, monkeypatch):
     """A server stop signals each of those children, not only generate and finish."""
     import signal
@@ -1119,6 +1121,7 @@ def test_terminate_active_job_is_a_noop_when_process_already_exited(tmp_path, mo
 
 # --- startup reconciliation of pid files a dead server left behind ---------------------
 
+@pytest.mark.posix
 def test_reconcile_annotates_and_clears_a_dead_orphan(tmp_path, monkeypatch):
     job_dir = tmp_path / "some-job"
     job_dir.mkdir()
@@ -1150,6 +1153,7 @@ def test_reconcile_kills_and_annotates_a_live_orphan(tmp_path, monkeypatch):
     assert not (job_dir / "pid").exists()
 
 
+@pytest.mark.posix
 def test_reconcile_survives_a_missing_run_log(tmp_path, monkeypatch):
     job_dir = tmp_path / "no-log-job"
     job_dir.mkdir()
@@ -1917,9 +1921,12 @@ def test_progress_streams_tell_proxies_not_to_buffer():
 def test_backends_say_whether_they_run_on_this_machine(monkeypatch):
     # The Generate dropdown offered the Mac-only Hunyuan-MLX routes on an NVIDIA pod.
     monkeypatch.setattr(api.backend_catalog, "host_platform", lambda: api.backend_catalog.NVIDIA)
+    # An NVIDIA Linux pod: on Windows the CUDA Hunyuan route is ruled out by the OS as well.
+    monkeypatch.setattr(api.backend_catalog._host, "os_family", lambda *a: "linux")
     here = {b["id"]: b["runs_here"] for b in api.backends_payload()["backends"]}
     assert here["hunyuan-cuda"] is True and here["hunyuan-mlx-xiong"] is False
     monkeypatch.setattr(api.backend_catalog, "host_platform", lambda: api.APPLE)
+    monkeypatch.setattr(api.backend_catalog._host, "os_family", lambda *a: "macos")
     here = {b["id"]: b["runs_here"] for b in api.backends_payload()["backends"]}
     assert here["hunyuan-mlx-xiong"] is True and here["hunyuan-cuda"] is False
 
@@ -2146,6 +2153,51 @@ def test_a_backend_is_found_by_its_catalogue_id_too():
     assert api.backend_spec("no-such-engine") is None
 
 
+def _job_for(backend_id, tmp_path, monkeypatch):
+    """A job the real runner can run, with a fresh job list so `finish` can be checked."""
+    jobs = api.JobManager()
+    monkeypatch.setattr(api, "JOBS", jobs)
+    monkeypatch.setattr(api, "_update_baseline", lambda job: None)
+    job = api.Job("job1", tmp_path, tmp_path / "in.png", tmp_path / "out.glb", {}, backend_id)
+    jobs.jobs[job.id] = job
+    jobs.active = job.id
+    return job, jobs
+
+
+def test_a_job_sent_with_the_catalogue_id_runs(tmp_path, monkeypatch):
+    # The studio sends "hunyuan_xiong"; the runner looked up BACKENDS["hunyuan_xiong"] directly,
+    # so the job thread died with a KeyError before its process started.
+    writer = tmp_path / "writer.py"
+    writer.write_text("import sys; print('shape 1/1', flush=True); open(sys.argv[1], 'wb').write(b'glb')\n",
+                      encoding="utf-8")
+    parsed = []
+    fake = dataclasses.replace(api.BACKENDS["hunyuan-mlx-xiong"], interpreter=Path(sys.executable),
+                               wrapper=writer, build_args=lambda job: [str(job.output_path)],
+                               parse_line=lambda job, line: parsed.append(line), finalize=None)
+    monkeypatch.setitem(api.BACKENDS, "hunyuan-mlx-xiong", fake)
+    job, jobs = _job_for("hunyuan_xiong", tmp_path, monkeypatch)
+
+    api._run_job(job)
+
+    assert job.status == "done", list(job.log_lines)
+    assert job.events[-1]["phase"] == "done"
+    assert "shape 1/1" in parsed    # the output reader found the backend too
+    assert jobs.active is None
+
+
+def test_a_job_whose_engine_is_unknown_fails_instead_of_running_forever(tmp_path, monkeypatch):
+    # A lookup outside the runner's try left the job "running" and never finished, so the
+    # studio showed "Working..." for good and Cancel could not stop it.
+    job, jobs = _job_for("no-such-engine", tmp_path, monkeypatch)
+
+    api._run_job(job)
+
+    assert job.status == "error"
+    assert job.events[-1]["phase"] == "error"
+    assert "no-such-engine" in job.events[-1]["message"]
+    assert jobs.active is None
+
+
 
 def test_front_back_says_to_install_a_picture_engine_when_only_that_is_missing():
     status = api.front_back_status(lambda: (True, None), lambda: False)
@@ -2320,3 +2372,10 @@ def test_run_folders_are_named_under_output_when_output_links_to_another_drive(t
 
     job = types.SimpleNamespace(status="done", events=[], output_path=drive / "run__pixal3d__1" / "run.glb")
     assert api._job_status_payload(job)["model"] == "run__pixal3d__1/run.glb"
+
+
+def test_the_rig_upload_reads_the_bone_names_choice_and_refuses_an_unknown_one():
+    source = MODULE_PATH.read_text(encoding="utf-8")
+    rig = source[source.index("def _create_animate_rig"):source.index("def _create_animate_play")]
+    assert "bone_names_choice(form)" in rig and "bone_names=" in rig
+    assert "except ValueError" in rig

@@ -84,7 +84,7 @@ def test_each_lod_has_a_plain_and_a_web_file_per_prop():
 
 def test_gltfpack_only_compresses(tmp_path):
     command = finish.gltfpack_command(Path("/bin/gltfpack"), Path("a.glb"), Path("b.glb"))
-    assert command[:5] == ["/bin/gltfpack", "-i", "a.glb", "-o", "b.glb"]
+    assert command[:5] == [str(Path("/bin/gltfpack")), "-i", "a.glb", "-o", "b.glb"]
     assert "-cc" in command and "-tw" in command
     assert not any(flag.startswith("-s") for flag in command)
 
@@ -293,9 +293,11 @@ def test_the_record_points_at_its_files_relative_to_out_dir(sheet):
     out, _runs, run = sheet
     run()
     entry = json.loads((out / "finish_props.json").read_text())["props"][0]
-    assert entry["source"] == "../split/chest.glb"
-    assert [lod["glb"] for lod in entry["lods"]] == ["chest/chest_LOD0.glb", "chest/chest_LOD1.glb"]
-    assert entry["lods"][0]["web_glb"] == "chest/chest_LOD0.web.glb"
+    # Relative paths in the OS's own form (backslashes on Windows); compared as POSIX here.
+    assert Path(entry["source"]).as_posix() == "../split/chest.glb"
+    assert [Path(lod["glb"]).as_posix() for lod in entry["lods"]] == [
+        "chest/chest_LOD0.glb", "chest/chest_LOD1.glb"]
+    assert Path(entry["lods"][0]["web_glb"]).as_posix() == "chest/chest_LOD0.web.glb"
     for lod in entry["lods"]:
         assert (out / lod["glb"]).is_file() and (out / lod["web_glb"]).is_file()
 
@@ -381,3 +383,9 @@ def test_resume_refuses_lods_baked_before_the_atlas_halved(sheet):
     record_path.write_text(json.dumps(record))
     with pytest.raises(SystemExit, match="lod_atlas"):
         run("--resume")
+
+
+def test_rel_posix_uses_forward_slashes_and_goes_up_when_needed(tmp_path):
+    out = tmp_path / "out"
+    assert finish.rel_posix(out / "a" / "b.glb", out) == "a/b.glb"
+    assert finish.rel_posix(tmp_path / "x.glb", out) == "../x.glb"

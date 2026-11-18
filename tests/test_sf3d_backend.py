@@ -68,7 +68,7 @@ def test_a_hub_id_with_no_snapshot_is_refused_before_sf3d_loads(tmp_path, monkey
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty"))
     monkeypatch.setattr(sf3d, "_load_sf3d", lambda repo: pytest.fail("loaded the code"))
     options = sf3d.SF3DOptions(repo=tmp_path, model="stabilityai/stable-fast-3d")
-    with pytest.raises(SystemExit, match="about 4.9 GB") as raised:
+    with pytest.raises(SystemExit, match="about 5.5 GB") as raised:
         sf3d._run(tmp_path / "in.png", tmp_path / "out.glb", options, "cpu")
     message = str(raised.value)
     assert "Stable Fast 3D" in message
@@ -82,3 +82,57 @@ def test_the_setup_hint_names_this_machines_installer():
 
     assert setup_command(host.AMD) == "scripts/bootstrap_sf3d_rocm.py"
     assert setup_command(host.APPLE) == "scripts/bootstrap_sf3d.py"
+
+
+def _minus_z_triangle():
+    """A triangle in front of the origin as SF3D emits it: on -Z, its face pointing -Z."""
+    import trimesh
+
+    return trimesh.Trimesh(vertices=[[0.0, 0.0, -1.0], [0.0, 1.0, -1.0], [1.0, 0.0, -1.0]],
+                           faces=[[0, 1, 2]], process=False)
+
+
+def test_face_front_turns_an_sf3d_mesh_to_face_plus_z():
+    """SF3D's models face -Z; Pixal3D's and Hunyuan's face +Z, glTF's front. A turn, not a mirror."""
+    mesh = _minus_z_triangle()
+    assert mesh.face_normals[0][2] == pytest.approx(-1.0)
+    up_before = mesh.vertices[:, 1].copy()
+    sf3d.face_front(mesh)
+    assert mesh.vertices[:, 2] == pytest.approx([1.0, 1.0, 1.0])
+    assert mesh.vertices[:, 1] == pytest.approx(up_before)       # up stays up
+    assert mesh.face_normals[0][2] == pytest.approx(1.0)         # the face turned with it
+
+
+def test_the_saved_model_faces_plus_z(tmp_path, monkeypatch):
+    """What reaches the .glb is turned: a prop facing away showed its back as its front,
+    and every SF3D file faced the other way from the lab's other engines in a game engine."""
+    import trimesh
+    from PIL import Image
+
+    class FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def run_image(self, images, **kwargs):
+            return _minus_z_triangle(), None
+
+    monkeypatch.setattr(sf3d, "local_model", lambda model: model)
+    monkeypatch.setattr(sf3d, "_load_sf3d", lambda repo: (FakeModel, lambda image, ratio: image))
+    monkeypatch.setattr(sf3d, "cut_out", lambda image: image)
+    picture = tmp_path / "in.png"
+    Image.new("RGBA", (8, 8), (200, 100, 50, 255)).save(picture)
+    out = tmp_path / "out.glb"
+    sf3d._run(picture, out, sf3d.SF3DOptions(repo=tmp_path, model="m"), "cpu")
+    saved = trimesh.load(out, force="mesh")
+    assert saved.vertices[:, 2].mean() > 0
+    # Stamped as facing front too, as Pixal3D's are: the prop splitter reads the stamp to
+    # choose its reading order, and an unstamped file is taken as SF3D's old -Z.
+    from image_to_3dlab.glb_turn import glb_faces_front
+    assert glb_faces_front(out.read_bytes())

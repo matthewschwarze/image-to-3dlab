@@ -81,6 +81,7 @@ def test_the_extensions_build_against_the_torch_just_installed():
     assert "--no-build-isolation" in commands[-1]
 
 
+@pytest.mark.posix
 def test_the_build_is_told_to_include_the_gpu_kernels():
     """USE_CUDA=1 is what keeps baker_kernel.cu in the build. Without it the extension
     builds and has no GPU kernels in it, with nothing to say so."""
@@ -305,3 +306,20 @@ def test_a_marker_without_its_venv_is_not_a_build(monkeypatch, tmp_path):
     python.parent.mkdir(parents=True)
     python.write_text("")
     assert boot.build_present() is True
+
+
+def test_a_gated_refusal_reads_as_a_sign_in_problem_in_setup(monkeypatch):
+    """Setup & Status explains a failed setup from its last lines (download_api._explain). The
+    AMD refusal must use the wording it reads as a sign-in problem, or the user is shown a bare
+    exit code instead of "sign in and accept the terms"."""
+    import download_api
+    import huggingface_hub
+
+    def refused(repo, **kwargs):
+        raise RuntimeError(f"403 Forbidden: Cannot access gated repo for url https://huggingface.co/{repo}")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", refused)
+    with pytest.raises(SystemExit) as stopped:
+        boot.install_weights()
+    message = download_api._explain(1, ["Fetching weights...", str(stopped.value)])
+    assert message.startswith("refused: this model needs a Hugging Face login")

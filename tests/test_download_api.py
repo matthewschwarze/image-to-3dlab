@@ -103,6 +103,29 @@ def test_a_repo_named_tokens_is_not_mistaken_for_a_login_problem():
     assert "Hugging Face" not in dl._explain(1, log)
 
 
+def test_a_setup_that_only_announces_a_gated_model_is_not_a_login_problem():
+    """SF3D's own announcement says the model "is gated". A Mac without libomp stopped right
+    after it, and the setup blamed Hugging Face sign-in instead of naming libomp."""
+    log = ["About to install:", "backend: Stable Fast 3D (Stability AI)",
+           "stabilityai/stable-fast-3d is gated (see licence below)",
+           "licence: Stability AI Community License: free under $1M annual revenue, otherwise a",
+           "commercial licence from Stability. Gated: accept it at",
+           "https://huggingface.co/stabilityai/stable-fast-3d and run `hf auth login`.",
+           "SF3D's Metal baker needs libomp: brew install libomp"]
+    message = dl._explain(1, log)
+    assert "Hugging Face" not in message
+    assert "brew install libomp" in message
+
+
+@pytest.mark.parametrize("line", [
+    "Hugging Face refused stabilityai/stable-fast-3d: it is gated.",
+    ("huggingface_hub.errors.GatedRepoError: 403 Client Error. Cannot access gated repo for url "
+     "https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m/resolve/main/config.json."),
+])
+def test_a_real_gated_refusal_is_still_a_login_problem(line):
+    assert "login" in dl._explain(1, ["Fetching weights...", line])
+
+
 def test_a_full_disk_is_explained_as_a_full_disk():
     assert "disk space" in dl._explain(1, ["OSError: [Errno 28] No space left on device"])
 
@@ -400,7 +423,7 @@ def test_nothing_installed_or_a_prebuilt_is_never_offered_a_rebuild(tmp_path):
     """No binary is Set up's job; a prebuilt of the pinned release has nothing to rebuild."""
     source, cli = _pixal3d_tree(tmp_path, patched=False, cli_newer=True)
     assert dl.rebuild_reason("pixal3d", source, tmp_path / "missing") is None
-    (tmp_path / "post-replay").write_text("binary")   # our own prebuilt: nothing to patch
+    boot.host.executable(tmp_path, "post-replay").write_text("binary")   # our own prebuilt: nothing to patch
     boot.record_release(tmp_path)     # ...of the pinned release
     assert dl.rebuild_reason("pixal3d", tmp_path / "missing", cli) is None
 
@@ -413,7 +436,7 @@ def test_upstreams_old_nvidia_download_is_offered_ours(tmp_path):
     missing = tmp_path / "missing.cpp"
     assert "older download" in dl.rebuild_reason("pixal3d", missing, cli)
     assert dl.rebuild_download("pixal3d", missing, cli) == dl.NEW_BUILD_SIZE
-    (tmp_path / "post-replay").write_text("binary")
+    boot.host.executable(tmp_path, "post-replay").write_text("binary")
     boot.record_release(tmp_path)
     assert dl.rebuild_reason("pixal3d", missing, cli) is None
     assert dl.rebuild_download("pixal3d", missing, cli) is None
@@ -443,7 +466,7 @@ def test_a_compiled_build_is_never_swapped_for_a_download(tmp_path):
     cli = tmp_path / "build" / "trellis-cli"
     cli.parent.mkdir()
     cli.write_text("binary")
-    (cli.parent / "post-replay").write_text("binary")
+    boot.host.executable(cli.parent, "post-replay").write_text("binary")
     (tmp_path / "CMakeLists.txt").write_text("project(pixal3d)")
     assert dl.rebuild_download("pixal3d", tmp_path / "missing.cpp", cli) is None
 
@@ -621,6 +644,7 @@ def _vision_weight(repo):
                      pattern="snapshots/*/mmproj-*.gguf")
 
 
+@pytest.mark.symlinks
 def test_a_patterned_weight_measures_only_its_own_file(tmp_path):
     weight = _vision_weight(_hf_folder(tmp_path))
     present, total, alt = weight.state()
@@ -628,6 +652,7 @@ def test_a_patterned_weight_measures_only_its_own_file(tmp_path):
     assert weight.describe()["bytes_present"] == 7
 
 
+@pytest.mark.symlinks
 def test_a_patterned_weight_is_missing_when_its_file_is(tmp_path):
     repo = _hf_folder(tmp_path)
     for link in repo.glob("snapshots/*/mmproj-*"):
@@ -635,6 +660,7 @@ def test_a_patterned_weight_is_missing_when_its_file_is(tmp_path):
     assert _vision_weight(repo).state()[:2] == (False, 0)
 
 
+@pytest.mark.symlinks
 def test_removing_a_patterned_weight_deletes_its_file_and_keeps_the_folder(tmp_path, monkeypatch):
     import dataclasses
     repo = _hf_folder(tmp_path)
@@ -647,6 +673,7 @@ def test_removing_a_patterned_weight_deletes_its_file_and_keeps_the_folder(tmp_p
     assert (repo / "blobs" / "sha-50").is_file() and repo.is_dir()   # Qwen's own model stays
 
 
+@pytest.mark.symlinks
 def test_a_patterned_weight_does_not_make_its_whole_folder_shared(tmp_path):
     import dataclasses
 
@@ -755,6 +782,7 @@ def test_remove_weights_in_active_external_models_root(tmp_path, monkeypatch, sa
     assert not own.exists() and root.is_dir()
 
 
+@pytest.mark.symlinks
 @pytest.mark.parametrize("escape", ["sibling", "inactive", "symlink", "pattern"])
 def test_external_model_root_does_not_allow_escapes(tmp_path, monkeypatch, escape):
     import dataclasses

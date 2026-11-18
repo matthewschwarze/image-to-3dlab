@@ -1,7 +1,7 @@
 // AssetFurnace studio: Library | one viewer | Steps.
 // Steps run here through the server's job APIs, prop-sheet splitting included.
 
-import { STEPS, stepCount, stepDone, stepState, statusText, displayModel, stepFile, canViewStep, canFixShown, fixBlockedNote, servedUrl, visibleFamilies, madeVersion, engineOf, engineChoices, openingView, isModelFile, duration, canViewPictures, sizeText, deletionWords, linkedAssetId, statsRows, canReveal } from './library.js';
+import { STEPS, stepCount, stepDone, stepState, statusText, displayModel, stepFile, canViewStep, canFixShown, fixBlockedNote, servedUrl, visibleFamilies, madeVersion, engineOf, engineChoices, openingView, isModelFile, duration, canViewPictures, sizeText, deletionWords, linkedAssetId, statsRows, canReveal, robloxLines } from './library.js';
 import { createStudioViewer } from './viewer.js';
 import { readyEngines, readableLog, copyDetails, logScroll, moveBox, resizeBox } from './jobs.js';
 import { stepBody, wireStep, wireBrush, wireVersions } from './steps.js';
@@ -9,6 +9,7 @@ import { retryWant } from './plan.js';
 import { closeBrushStage } from './brush.js';
 import { openCreate, runChain } from './create.js';
 import { openActivity, openAbout, openGuide, openReport, closeSheet, usageNotice, openNews, refreshNews } from './pages.js';
+import { openAddons } from './addons_sheet.js';
 import { STEP_LABELS, stoppedLine, stoppedStep } from './plan.js';
 import { mountSkins } from './skins.js';
 import { installTooltips } from './tooltips.js';
@@ -117,9 +118,10 @@ function assetButton(asset, { sub = false } = {}) {
     : `<img class="mark" data-thumb-id="${escape(asset.id)}" src="${LOGO}" alt="">`;
   const when = new Date(asset.updated * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
   const name = sub ? `v${asset.version} · ${statusText(asset)}` : asset.name;
+  const madeWith = asset.made_with ? ` · made with ${escape(asset.made_with)}` : '';
   return `<button class="asset${sub ? ' sub' : ''}${asset.hidden ? ' is-hidden' : ''}" data-id="${escape(asset.id)}" title="${escape(when)}" aria-current="${libraryRowSelection(asset, { current, inputId: libraryInputId, viewingMaking })}">
       <span class="thumb">${thumb}</span>
-      <span style="min-width:0"><span class="nm">${asset.main ? '<b class="star" title="Main version">★</b> ' : ''}${escape(name)}</span><span class="st"><span class="pips" aria-hidden="true">${pips}</span>${sub ? escape(when) : escape(statusText(asset))}</span></span>
+      <span style="min-width:0"><span class="nm">${asset.main ? '<b class="star" title="Main version">★</b> ' : ''}${escape(name)}</span><span class="st"><span class="pips" aria-hidden="true">${pips}</span>${sub ? escape(when) : escape(statusText(asset))}${madeWith}</span></span>
     </button>`;
 }
 
@@ -318,6 +320,7 @@ async function showModelInfo(file) {
   const stats = $('modelStats');
   const actions = $('fileActions');
   $('fileCard').hidden = true;
+  $('robloxResult').hidden = true;
   if (!file) return;
   const response = await fetch(`/api/model-info?file=${encodeURIComponent(file)}`).catch(() => null);
   const info = response?.ok ? await response.json() : null;
@@ -337,6 +340,28 @@ async function showModelInfo(file) {
 $('revealBtn').addEventListener('click', () => {
   fetch('/api/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ file: $('fileActions').dataset.file }) });
+});
+
+$('robloxBtn').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const file = $('fileActions').dataset.file;
+  const list = $('robloxResult');
+  button.disabled = true;
+  button.textContent = 'Exporting…';
+  const response = await fetch('/api/roblox-export', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file }) }).catch(() => null);
+  const made = response ? await response.json().catch(() => null) : null;
+  button.disabled = false;
+  button.textContent = 'Export for Roblox';
+  if ($('fileActions').dataset.file !== file) return;  // the panel has moved on
+  const lines = response?.ok ? robloxLines(made)
+    : [{ level: 'fail', text: made?.error || 'The export did not run. Is the studio still running?' }];
+  list.innerHTML = lines.map((line) => `<li class="${escape(line.level)}">${escape(line.text)}</li>`).join('');
+  list.hidden = false;
+  if (response?.ok && canReveal(location.hostname)) {
+    fetch('/api/reveal', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: made.file }) });
+  }
 });
 
 $('copyPathBtn').addEventListener('click', async (event) => {
@@ -914,6 +939,7 @@ window.addEventListener('drop', (event) => {
 
 $('guideBtn').addEventListener('click', () => openGuide($('stage')));
 $('activityBtn').addEventListener('click', () => openActivity($('stage')));
+$('addonsBtn').addEventListener('click', () => openAddons($('stage')));
 $('newsBtn').addEventListener('click', () => openNews($('stage'), $('newsBtn')));
 refreshNews($('newsBtn'));   // the count only: the list opens when the person asks
 $('aboutBtn').addEventListener('click', () => openAbout($('stage')));

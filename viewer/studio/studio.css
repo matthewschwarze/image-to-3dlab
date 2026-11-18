@@ -187,7 +187,14 @@ a { color: inherit; }
 .model-stats .wide { grid-column: 1 / -1; }  /* "2 × 2048², 1 × 1024²" needs the room */
 .model-stats dt { font-size: 12px; color: var(--ash); }
 .model-stats dd { margin: 0; font: 500 12px/1.4 var(--f-num); color: var(--bone); text-align: right; overflow-wrap: anywhere; }
-.file-actions { display: flex; gap: 8px; }
+.file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.roblox-result { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 12px; color: var(--ash); }
+.roblox-result li::before { content: "✓ "; color: var(--ash); }
+.roblox-result li.warn::before { content: "! "; color: #e0a040; }
+.roblox-result li.fail { color: var(--bone); }
+.roblox-result li.fail::before { content: "✕ "; color: #e05050; }
+.roblox-result li.info::before { content: ""; }
+.roblox-result li.note::before { content: "• "; color: var(--ash); }
 
 /* stack before the viewer gets squeezed: three columns need ~1150 px to leave it room */
 @media (max-width: 1150px) {
@@ -243,6 +250,14 @@ body.busy .step .body [data-run] { opacity: .5; pointer-events: none; }
 .sheet { position: absolute; inset: 0; z-index: 20; background: #0c0a09; display: grid; place-items: start center; padding: 28px 24px; overflow-y: auto; }
 .sheet-card { width: min(680px, 100%); display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .sheet-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.addon-sheet-list { display: grid; gap: 14px; }
+.addon-tool-card .setup-card-head { grid-template-columns: 1fr auto; }
+.addon-tool-form { display: grid; gap: 10px; margin-top: 10px; }
+.addon-tool-form label { font-size: 12px; color: var(--ash); }
+.addon-tool-form input, .addon-tool-form select { background: var(--coal); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--bone); }
+.addon-tool-form input[type="checkbox"] { width: auto; }
+.addon-toggle { display: flex; align-items: center; gap: 8px; }
+.addon-log { background: var(--coal); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-height: 80px; max-height: 200px; overflow: auto; font-size: 12px; white-space: pre-wrap; margin-top: 10px; }
 .sheet-card h2 { margin: 0; font: 800 26px/1.15 var(--f-display); letter-spacing: -.01em; }
 .sheet-card h2 span { color: var(--ember); }
 .quick { display: flex; flex-wrap: wrap; gap: 6px; }

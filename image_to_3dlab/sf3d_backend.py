@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from image_to_3dlab import matte
+from image_to_3dlab.glb_turn import mark_front
 from image_to_3dlab.matte import is_matted
 
 
@@ -73,7 +74,21 @@ def local_model(model: str) -> str:
         os.environ["HF_HUB_OFFLINE"] = "1"
         return model
     route = "AMD" if host.host_platform() == host.AMD else "Mac"
-    return require_local(model, backend="Stable Fast 3D", route=route, size="about 4.9 GB")
+    return require_local(model, backend="Stable Fast 3D", route=route, size="about 5.5 GB")
+
+
+def face_front(mesh) -> None:
+    """Turn an SF3D mesh half a turn about the up axis, so it faces +Z like the lab's other engines.
+
+    SF3D puts the subject's front on -Z. Pixal3D and Hunyuan put it on +Z, which is glTF's
+    front, and the studio shows a model from +Z. A rigged character got away with it (the
+    skeleton says which way it faces), but an SF3D prop showed its back as its front, and
+    every SF3D file faced the other way from the rest in a game engine. A rotation, not a
+    mirror: the surface stays outward and the texture is untouched.
+    """
+    import numpy as np
+
+    mesh.apply_transform(np.diag([-1.0, 1.0, -1.0, 1.0]))
 
 
 def _run(
@@ -105,7 +120,10 @@ def _run(
                 remesh=options.remesh,
                 vertex_count=options.target_vertices,
             )
+        face_front(mesh)
         mesh.export(str(output_path), include_normals=True)
+        # Stamped like Pixal3D's, so the prop splitter reads it as facing front, not SF3D's old -Z.
+        output_path.write_bytes(mark_front(output_path.read_bytes()))
     finally:
         del model
         gc.collect()

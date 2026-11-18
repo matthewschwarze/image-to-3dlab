@@ -91,19 +91,24 @@ The studio does not need to be open: the first tool call starts it in the backgr
 | `open_in_studio` | Opens the asset in your browser, so you can spin it and play its moves |
 | `model_info` | A model's numbers (triangles, vertices, textures and their sizes, bones, moves, file size) and its full path on your computer |
 | `show_in_folder` | Opens the folder holding a model in Finder or Explorer, with the file selected |
+| `export_roblox` | Makes a copy Roblox Studio imports at the right size, with its surface pictures loose, and checks it against Roblox's triangle limits |
 | `make_skin` | A new skin for a finished Pixal3D model: say what to change ("make the skirt gold"), and the same model gets new paint. Its rig and moves still fit |
 | `skin_status` / `skin_picture` | Where a skin is, and its new pictures, so the agent can show you each one before anything is built |
 | `approve_skin_picture` / `redo_skin_picture` | Your verdict on a picture: approve it, or ask again with a correction. Front first, then back |
 | `build_skin` / `cancel_skin` | Paint the model from the approved pictures and finish it (a few minutes), or stop that |
 | `report_bug` | Drafts a bug report (your words, plus version, machine and the last error) and gives you the links to send it. It never sends anything itself |
 | `install_backend` | Sets up an engine, but **only after you say yes**: it first tells the agent what it would download, the size and the licence |
+| `list_addons` | Every add-on on the list, whether it is installed, its label (Verified, Listed or Unknown), whether it runs on your machine or in the cloud, its author, summary and links |
+| `install_addon` | Installs an add-on, but **only after you say yes**: it first tells the agent who wrote it, its licence and what it downloads |
+| `run_addon` | Runs a tool from an installed add-on, returning a run id the agent polls like any other run |
 
 When a result looks off, ask your agent to try a knob: it can call `options`, then redo just
 that step as a new version, for example *"redo the Finish with Pixel Match's nudge off"*
 becomes `continue_asset(asset_id, up_to="finished", again=True, advanced={"nudge": false})`.
 
-Your agent can't delete, hide or rename assets, or paste your Hugging Face token. Those stay
-with you, in the studio.
+Add-ons are extra tools from other repos. Your agent can list them, show you the details, and
+install or run one after you say yes. They run code on your machine, so the same consent rule
+applies as for `install_backend`. To write an add-on, see [docs/add-ons.md](add-ons.md).
 
 ## Try it
 

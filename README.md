@@ -43,6 +43,8 @@ $1 to reserve, locked for 6 months. The app stays free and open source.</p>
 
 ## News
 
+- **2026-11-18 · 0.6.0** Add-ons: install tools other people built, from the studio, the command line or your agent. Make your own and submit it.
+- **2026-11-17 · 0.5.11** Export for Roblox: one click to a Roblox Studio-ready model. Plus Unity bone names on the Rig step.
 - **2026-11-13 · 0.5.10** Game-ready out of the box: real-world height, props that stand up straight, phone-sized textures, and Fast / Rebuild clean-up.
 - **2026-11-10 · 0.5.9** New moves (Sprint, Crouch sneak, Zombie walk, Robot dance and more), feet that stay planted, and smoother loops.
 - **2026-11-08 · 0.5.8** Switch between an asset's models in the viewer, every 3D file says it was made with AssetFurnace, and the one-line installer works again.
@@ -96,7 +98,8 @@ Apple Silicon deserves more love in the 3D and Image generation community. So th
 skin weights to your humanoid. Then pick a move: 21 presets, each fitted to your character
 so arms stay out of the body and feet stay on the floor. Download the animated GLB for
 your engine. Runs on Apple Silicon, NVIDIA and AMD (ROCm) alike — SkinTokens is pure
-PyTorch, so on an AMD card it needs no NVIDIA-only build.
+PyTorch, so on an AMD card it needs no NVIDIA-only build. For Unity, set **Bone names** to
+**Unity Humanoid** before rigging: the body bones get Unity's names, so the avatar maps itself.
 
 <p align="center">
   <img src="docs/images/auto-rig-then-dance.gif" width="720"
@@ -247,9 +250,10 @@ Everything still runs on your machine.
    installed elsewhere.
 3. Start a new agent session and ask: *"Make me a Pixar-style gator warrior and show me."*
 
-It can also run the repo's [Blender helpers](#blender-helpers-for-your-agent) for you.
-Your agent never downloads model weights without your yes, and can't delete or rename
-your assets. Mac, Linux and Windows ([how to connect on Windows](docs/agents.md#on-windows)).
+It can also run add-ons and the repo's [Blender helpers](#blender-helpers-for-your-agent)
+for you. Your agent never downloads model weights without your yes, and can't delete or
+rename your assets. Mac, Linux and Windows ([how to connect on Windows](docs/agents.md#on-windows)).
+To write an add-on, see [docs/add-ons.md](docs/add-ons.md).
 
 ## Setting up a backend
 

@@ -170,6 +170,7 @@ def _tarball(path: Path, members: dict[str, bytes], links: dict[str, str]) -> No
             tar.addfile(info)
 
 
+@pytest.mark.posix
 def test_unpacking_a_linux_prebuilt_keeps_library_symlinks_and_runs(tmp_path, monkeypatch):
     """The CUDA tarball carries `libcudart.so.12 -> libcudart.so.12.9.79` style links; a
     flattened copy that loses them fails to load at run time, not at install time."""
@@ -380,6 +381,7 @@ def test_amd_ignores_the_nvidia_answer():
                            ["gfx1100"]) == "hip-source"
 
 
+@pytest.mark.posix
 def test_the_hip_build_is_given_rocms_clang_not_the_hipcc_wrapper(monkeypatch, tmp_path):
     """CMake refuses hipcc outright ("CMAKE_HIP_COMPILER is set to the hipcc wrapper ... This
     is not supported"), so naming it makes configure fail on every AMD machine. It is the

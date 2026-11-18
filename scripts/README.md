@@ -37,6 +37,7 @@ game-ready LODs), start with [the prop sheet guide](../docs/prop-sheets.md).
 | `bootstrap_trellis_rocm.py` | Install TRELLIS.2 for Linux with an AMD card: Microsoft's own code, built with HIP. |
 | `bootstrap_sf3d.py` | Install Stable Fast 3D: its code and compiled extensions, then its gated weights. |
 | `patch_sf3d_linux.py` | Let Stable Fast 3D compile its GPU texture baker on an AMD card. |
+| `patch_sf3d_mps_queue.py` | Let Stable Fast 3D's Metal texture baker run under current PyTorch on a Mac. |
 | `bootstrap_sf3d_rocm.py` | Install Stable Fast 3D for Linux with an AMD card: its own venv, built with HIP. |
 | `bootstrap_front_back.py` | Install Front + back: what builds a model from a front and a back picture. |
 | `bootstrap_pixal3d.py` | Install Pixal3D (raven38/pixal3d.cpp): a `trellis-cli` build plus its Q8_0 weights. |
@@ -115,6 +116,7 @@ The asset's surface, as opposed to its shape.
 | `compress_glb_textures.py` | Re-encode a GLB's textures, without touching its geometry. |
 | `retopo_repaint.py` | Finish a generated asset: retopologise, repaint, bake detail, compress. |
 | `finish_props.py` | Finish every prop from a prop sheet: LODs re-baked from the original, then compressed. |
+| `export_roblox.py` | Make a copy of a GLB that Roblox Studio imports at the right size, with its pictures loose. |
 | `living_organic_material.py` | Apply a reproducible living-organic material recipe to an existing GLB. |
 | `project_labels.py` | Project a 2D image onto a generated mesh as per-vertex colours. |
 | `project_markings.py` | Paint the source image's markings back onto a generated mesh's texture. |
@@ -210,6 +212,7 @@ tuning checklist. Manual fitting and visual weight/deformation review remain req
 | `clean_skin_weights.py` | Drop skin weights that come from bones far away in the skeleton, then rebalance. |
 | `kimodo_retarget.py` | Play a Kimodo text-to-motion clip on a SkinTokens-rigged humanoid and export an animated GLB, with feet grounded, repeating clips loopable and looping moves in place. |
 | `rig_check.py` | Say whether a rigged GLB fits the preset moves (a humanoid), read without Blender. |
+| `name_bones.py` | Give a rigged humanoid GLB's bones an engine's names (Unity Humanoid), without Blender. |
 | `attack_pose.py` | Pose curves for a quadruped slam attack, as pure functions. |
 | `rigify_walk_pose.py` | Pose curves for a quadruped trot on a Rigify-generated rig, as pure functions. |
 | `blender_walk_cycle.py` | Author a looping quadruped gait cycle on the rigged fox in the live Blender scene. |
@@ -223,6 +226,7 @@ Numbers about the project itself, not about any asset.
 
 | Script | What it does |
 |---|---|
+| `addon.py` | Install and run add-ons: someone else's repo with an `addon.json`. |
 | `discord_release_card.py` | Post a GitHub release to Discord as a tidy card instead of a bare link. |
 | `discord_pr_card.py` | Post a GitHub pull request to Discord as a tidy card, like the release cards. |
 | `repo_traffic.py` | Save a repo's GitHub traffic and its one-line install counts into one CSV, a row per day. |
