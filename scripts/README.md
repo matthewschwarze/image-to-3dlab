@@ -132,10 +132,13 @@ Numbers and renders to decide whether a change helped. Read `docs/` before trust
 | Script | What it does |
 |---|---|
 | `compare_to_source.py` | Put a generated asset next to the image it was generated from. |
+| `outline_check.py` | Say which parts of a model stick out past the pictures it was made from. |
 | `mark_asset.py` | Record a human verdict on a generated asset, so winners stay findable. |
 | `ribbon_metric.py` | Measure how torn a generated mesh is, and gate post-processing on it. |
+| `strand_score.py` | Count the hair strands a Pixal3D figure has in front of its face, to keep the cleanest of a few tries. |
 | `tear_provenance.py` | Ask of every large tear: could the input view see it?. |
 | `glb_forensics.py` | Dump what a GLB actually contains, so a reference asset can be diffed against ours. |
+| `normal_map_facets.py` | Say whether a GLB's shading breaks at its triangle edges, as a normal map baked against flat shading makes it. |
 | `mesh_checkpoint_forensics.py` | Measure exact-position topology in an o_voxel `.pt` geometry checkpoint. |
 | `replay_cleanup_checkpoints.py` | Replay o_voxel cleanup on an exact mesh checkpoint, saving every substage. |
 | `diagnose_remesh_kernel.py` | Isolate why Metal narrow-band DC remeshing emits a wireframe instead of a surface. |

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cameras inside the GLB** (`image_to_3dlab/glb_views.py`): a model can carry the cameras and pictures it was built from, so Pixel Match works from the file alone. The pictures are stored as lossless WebP (every pixel as saved, about a third smaller than PNG), adding about 0.5 MB for front + back and 1.5-3 MB for four views; other glTF readers ignore them. `python -m image_to_3dlab.glb_views embed|extract model.glb` adds them to an older model or takes them out as a `.svviews` folder.
+- **Pixal3D builds keep their cameras inside the GLB**: a model built from pictures now carries them (the `.svviews` folder stays beside it too), so it can be painted from them anywhere it goes.
+- **Outline check** (`scripts/outline_check.py`): lays a model over the pictures it was made from, with the generator's own cameras, and says which parts stick out past the figure's outline, how far, which way and where on the model; it can mark them in red over the pictures. Such a part is the generator's guess: a tail built longer than the picture, a second sole glued under a boot. It only reports. Works on a Finish run folder, on a Pixal3D model with its saved pictures, or on any model with `--views`.
 - **Pixel Match: `--keep-top-paint`** leaves surfaces that face up and that no picture sees (a hat's brim, shoulders,
   the top of the hair) in the generator's own paint. The pictures' cameras stand level with the subject, so they never
   see those tops, and the local colour match shifted them like whatever the pictures see nearby: a wizard's dark violet
@@ -34,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the front picture's cut-out, so no rig is needed (`image_to_3dlab/side_paint.py`); `photo_paint.py --sides` sets it
   for a model painted again. `--sides-paint none` (or `--sides-shape-only`) lets the sides shape the model only;
   `all`, the default, is right for real side photos and a vehicle's doors and lettering.
+- **`scripts/strand_score.py`** counts the hair strands a Pixal3D figure has in front of its face (a sheet floating a few millimetres before the skin where the front picture shows the face, painted unlike the picture), so the cleanest of a few tries of one character can be kept; `image_to_3dlab/strands.py` holds the rule. Reports only.
+- **`scripts/normal_map_facets.py`** says whether a finished model's shading breaks at its triangle edges, the facets a normal map baked against flat shading (or hard normals) leave: it reads the shading normal on both sides of each edge and compares the jump with the edge's angle. Models whose facets show keep 33-47 % of it, smooth ones 14-22 %, so 30 % is the line. Reports only.
 
 ### Fixed
 - **Rig: a skeleton that misses a leg is rigged once more.** The auto-rig is not deterministic: now and then it hangs
